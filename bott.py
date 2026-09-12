@@ -2,7 +2,7 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 
-TOKEN = '8999778583:AAFD-sqVK_HsGDs5v3xIcQum8_tLnJeU6AE'
+TOKEN = '8999778583:AAE7lPrhXQwOnR1gfkhwJ25rqK1w5z5xawM'
 ADMIN_ID = 7161571409
 
 bot = telebot.TeleBot(TOKEN)
