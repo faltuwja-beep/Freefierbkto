@@ -5,7 +5,7 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 
-TOKEN = '8878169821:AAGRH_IDrgb-Hyan5O9LX76-JLMYJ87Gd_Y'
+TOKEN = '8999778583:AAFD-sqVK_HsGDs5v3xIcQum8_tLnJeU6AE'
 ADMIN_ID = 7161571409
 
 bot = telebot.TeleBot(TOKEN)
@@ -435,22 +435,6 @@ def handle_admin_panels(call):
 
     elif call.data.startswith('editccdetails_'):
       plan_key = call.data.split('_')[1]
-        if user_id not in ADMIN_STATE:
-            ADMIN_STATE[user_id] = {}
-        ADMIN_STATE[user_id]['action'] = 'edit_cc_details'
-        ADMIN_STATE[user_id]['plan_key'] = plan_key
-        bot.send_message(call.message.chat.id, "📝 Enter new details format for CC Plan:", parse_mode='Markdown')
-
-    elif call.data.startswith('editlikeprice_'):
-        plan_key = call.data.split('_')[1]
-        if user_id not in ADMIN_STATE:
-            ADMIN_STATE[user_id] = {}
-        ADMIN_STATE[user_id]['action'] = 'edit_like_price'
-        ADMIN_STATE[user_id]['plan_key'] = plan_key
-        bot.send_message(call.message.chat.id, "💵 Enter new price display for Like Pack (e.g. ₹99):", parse_mode='Markdown')
-
-    elif call.data.startswith('editlikedetails_'):
-        plan_key = call.data.split('_')[1]
         if user_id not in ADMIN_STATE:
             ADMIN_STATE[user_id] = {}
         ADMIN_STATE[user_id]['action'] = 'edit_like_details'
