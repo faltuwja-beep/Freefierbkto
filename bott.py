@@ -5,7 +5,7 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 
-TOKEN = '8878169821:AAGRH_IDrgb-Hyan5O9LX76-JLMYJ87Gd_Y'
+TOKEN = '8999778583:AAFD-sqVK_HsGDs5v3xIcQum8_tLnJeU6AE'
 ADMIN_ID = 7161571409
 
 bot = telebot.TeleBot(TOKEN)
@@ -84,6 +84,17 @@ LIKE_PLANS = {
     }
 }
 
+def get_user(user_id):
+    if user_id not in USERS:
+        USERS[user_id] = {
+            'balance': 0.0,
+            'referrals': 0,
+            'referred_by': None,
+            'active_plans': [],
+            'referred_users': []
+        }
+    return USERS[user_id]
+
 def main_reply_keyboard(user_id):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
@@ -114,23 +125,24 @@ def check_subscription(user_id):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
+    user_data = get_user(user_id)
     
-    if user_id not in USERS:
-        USERS[user_id] = {'balance': 0.0, 'referrals': 0, 'referred_by': None, 'active_plans': [], 'referred_users': []}
-        
-        args = message.text.split()
-        if len(args) > 1 and args[1].startswith('ref_'):
-            try:
-                ref_id = int(args[1].split('_')[1])
-                if ref_id in USERS and ref_id != user_id:
-                    USERS[user_id]['referred_by'] = ref_id
-                    USERS[ref_id]['referrals'] += 1
-                    USERS[ref_id]['referred_users'].append(user_id)
-                    reward = SETTINGS['refer_reward']
-                    USERS[ref_id]['balance'] += reward
-                    bot.send_message(ref_id, f"🎉 *Congratulations!* You received **₹{reward}** for referring a new user.", parse_mode='Markdown')
-            except:
-                pass
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith('ref_'):
+        try:
+            ref_id = int(args[1].split('_')[1])
+            if ref_id != user_id and user_data['referred_by'] is None:
+                ref_data = get_user(ref_id)
+                user_data['referred_by'] = ref_id
+                ref_data['referrals'] += 1
+                if user_id not in ref_data['referred_users']:
+                    ref_data['referred_users'].append(user_id)
+                
+                reward = SETTINGS['refer_reward']
+                ref_data['balance'] += reward
+                bot.send_message(ref_id, f"🎉 *Congratulations!* You received **₹{reward}** for referring User `{user_id}`.", parse_mode='Markdown')
+        except Exception as e:
+            print(f"Ref Error: {e}")
 
     if not check_subscription(user_id):
         markup = InlineKeyboardMarkup(row_width=1)
@@ -176,8 +188,9 @@ def verify_join(call):
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     user_id = message.from_user.id
-    text = message.text
+    text = message.text.strip()
     username = message.from_user.username or str(message.from_user.first_name)
+    user_data = get_user(user_id)
 
     if not check_subscription(user_id):
         markup = InlineKeyboardMarkup(row_width=1)
@@ -187,69 +200,117 @@ def handle_text(message):
         bot.send_message(message.chat.id, "⚠️ *Aapko bot use karne ke liye pehle hamare sabhi channels join karne honge!*", reply_markup=markup, parse_mode='Markdown')
         return
 
-    if user_id == ADMIN_ID:
-        state = ADMIN_STATE.get('action')
+    # Admin actions handling
+    if user_id == ADMIN_ID and user_id in ADMIN_STATE:
+        state = ADMIN_STATE[user_id].get('action')
         
-        if state == 'edit_cc_price':
-            plan_key = ADMIN_STATE.get('plan_key')
-            if plan_key in CC_PLANS:
-                CC_PLANS[plan_key]['display_price'] = text.strip()
-                cleaned = ''.join([c for c in text if c.isdigit()])
-                CC_PLANS[plan_key]['price'] = cleaned if cleaned else "0"
-            ADMIN_STATE.clear()
-            bot.send_message(message.chat.id, f"✅ CC Plan price successfully updated to *{text}*!", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
-            return
-
-        elif state == 'edit_cc_details':
-            plan_key = ADMIN_STATE.get('plan_key')
-            if plan_key in CC_PLANS:
-                CC_PLANS[plan_key]['details'] = text.strip()
-            ADMIN_STATE.clear()
-            bot.send_message(message.chat.id, f"✅ CC Plan details successfully updated!", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
-            return
-
-        elif state == 'edit_like_price':
-            plan_key = ADMIN_STATE.get('plan_key')
-            if plan_key in LIKE_PLANS:
-                LIKE_PLANS[plan_key]['display_price'] = text.strip()
-                cleaned = ''.join([c for c in text if c.isdigit()])
-                LIKE_PLANS[plan_key]['price'] = cleaned if cleaned else "0"
-            ADMIN_STATE.clear()
-            bot.send_message(message.chat.id, f"✅ Like Pack price successfully updated to *{text}*!", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
-            return
-
-        elif state == 'edit_like_details':
-            plan_key = ADMIN_STATE.get('plan_key')
-            if plan_key in LIKE_PLANS:
-                LIKE_PLANS[plan_key]['details'] = text.strip()
-            ADMIN_STATE.clear()
-            bot.send_message(message.chat.id, f"✅ Like Pack details successfully updated!", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
-            return
-
-        elif state == 'add_bal_get_id':
+        if state == 'add_bal_get_id':
             try:
-                target_user_id = int(text.strip())
-                if target_user_id not in USERS:
-                    USERS[target_user_id] = {'balance': 0.0, 'referrals': 0, 'referred_by': None, 'active_plans': [], 'referred_users': []}
-                ADMIN_STATE['target_user'] = target_user_id
-                ADMIN_STATE['action'] = 'add_bal_get_amount'
+                target_user_id = int(text)
+                target_data = get_user(target_user_id)
+                ADMIN_STATE[user_id]['target_user'] = target_user_id
+                ADMIN_STATE[user_id]['action'] = 'add_bal_get_amount'
                 bot.send_message(message.chat.id, f"✅ Target User Found (`{target_user_id}`).\n\n💵 *Ab kitna amount add karna hai?*:", parse_mode='Markdown')
             except ValueError:
-                bot.send_message(message.chat.id, "❌ *Invalid User ID!*", parse_mode='Markdown')
+                bot.send_message(message.chat.id, "❌ *Invalid User ID!* Numbers only enter karein.", parse_mode='Markdown')
             return
 
         elif state == 'add_bal_get_amount':
             try:
-                amount = float(text.strip())
-                target_user_id = ADMIN_STATE['target_user']
-                USERS[target_user_id]['balance'] += amount
-                ADMIN_STATE.clear()
+                amount = float(text)
+                target_user_id = ADMIN_STATE[user_id]['target_user']
+                target_data = get_user(target_user_id)
+                target_data['balance'] += amount
+                ADMIN_STATE.pop(user_id, None)
                 bot.send_message(message.chat.id, f"✅ Successfully added **₹{amount}** to User ID: `{target_user_id}`!", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
                 bot.send_message(target_user_id, f"🎉 *Good News!* Admin has added **₹{amount}** to your wallet.", parse_mode='Markdown')
             except ValueError:
-                bot.send_message(message.chat.id, "❌ *Invalid amount!*", parse_mode='Markdown')
+                bot.send_message(message.chat.id, "❌ *Invalid amount!* Sahi numeric value enter karein.", parse_mode='Markdown')
             return
 
+        elif state == 'edit_cc_price':
+            plan_key = ADMIN_STATE[user_id].get('plan_key')
+            if plan_key in CC_PLANS:
+                CC_PLANS[plan_key]['display_price'] = text
+                cleaned = ''.join([c for c in text if c.isdigit()])
+                CC_PLANS[plan_key]['price'] = cleaned if cleaned else "0"
+            ADMIN_STATE.pop(user_id, None)
+            bot.send_message(message.chat.id, f"✅ CC Plan price successfully updated to *{text}*!", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
+            return
+
+        elif state == 'edit_cc_details':
+            plan_key = ADMIN_STATE[user_id].get('plan_key')
+            if plan_key in CC_PLANS:
+                CC_PLANS[plan_key]['details'] = text
+            ADMIN_STATE.pop(user_id, None)
+            bot.send_message(message.chat.id, f"✅ CC Plan details successfully updated!", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
+            return
+
+        elif state == 'edit_like_price':
+            plan_key = ADMIN_STATE[user_id].get('plan_key')
+            if plan_key in LIKE_PLANS:
+                LIKE_PLANS[plan_key]['display_price'] = text
+                cleaned = ''.join([c for c in text if c.isdigit()])
+                LIKE_PLANS[plan_key]['price'] = cleaned if cleaned else "0"
+            ADMIN_STATE.pop(user_id, None)
+            bot.send_message(message.chat.id, f"✅ Like Pack price successfully updated to *{text}*!", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
+            return
+
+        elif state == 'edit_like_details':
+            plan_key = ADMIN_STATE[user_id].get('plan_key')
+            if plan_key in LIKE_PLANS:
+                LIKE_PLANS[plan_key]['details'] = text
+            ADMIN_STATE.pop(user_id, None)
+            bot.send_message(message.chat.id, f"✅ Like Pack details successfully updated!", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
+            return
+
+    # User state handling (Add Money UTR flow)
+    if user_id in USER_STATE and USER_STATE[user_id].get('state') == 'waiting_for_amount':
+        if not text.isdigit():
+            bot.send_message(message.chat.id, "❌ *Error:* Please enter a valid amount in numbers (e.g., 100, 500).", parse_mode='Markdown')
+            return
+        
+        try:
+            amount = float(text)
+            if amount <= 0:
+                raise ValueError()
+            USER_STATE[user_id] = {'state': 'waiting_for_utr', 'amount': amount}
+            
+            pay_text = (
+                "💎 **SECURE PAYMENT GATEWAY**\n\n"
+                f"💵 Amount to Pay: **₹{amount}**\n"
+                "🎯 UPI ID: `sima6241@ptaxis`\n\n"
+                "📌 *Instructions:*\n"
+                "1. Pay via UPI to `sima6241@ptaxis`.\n"
+                "2. Send your 12-digit UTR ID here in the chat."
+            )
+            bot.send_message(message.chat.id, pay_text, parse_mode='Markdown')
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ *Please enter a valid amount in numbers.*", parse_mode='Markdown')
+        return
+
+    elif user_id in USER_STATE and USER_STATE[user_id].get('state') == 'waiting_for_utr':
+        utr = text
+        amount = USER_STATE[user_id]['amount']
+        USER_STATE.pop(user_id, None)
+        
+        bot.send_message(message.chat.id, "✅ *Proof Submitted Successfully!*\n\nAdmin will verify your UTR and approve funds shortly.", reply_markup=main_reply_keyboard(user_id), parse_mode='Markdown')
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user_id}_{amount}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user_id}")
+        )
+        admin_alert = (
+            "🔔 **NEW PAYMENT PROOF**\n\n"
+            f"👤 User: {username} (ID: `{user_id}`)\n"
+            f"💵 Amount: **₹{amount}**\n"
+            f"🧾 UTR: `{utr}`"
+        )
+        bot.send_message(ADMIN_ID, admin_alert, reply_markup=markup, parse_mode='Markdown')
+        return
+
+    # Menu texts handling
     if text == "🛒 CC Store":
         store_msg = (
             "╔════════════════════╗\n"
@@ -274,28 +335,48 @@ def handle_text(message):
             markup.add(InlineKeyboardButton(f"⚡ {plan['name']} ➔ {plan['display_price']}", callback_data=key))
         bot.send_message(message.chat.id, store_msg, reply_markup=markup, parse_mode='Markdown')
 
+    elif text == "📦 My Active Plans":
+        active_plans = user_data.get('active_plans', [])
+        if not active_plans:
+            bot.send_message(message.chat.id, "📦 *Aapka koi bhi active plan nahi hai!*", parse_mode='Markdown', reply_markup=main_reply_keyboard(user_id))
+        else:
+            msg = "📦 **YOUR ACTIVE PLANS:**\n\n"
+            for p in active_plans:
+                msg += f"🔹 **{p['name']}**\n📅 Expires On: `{p['expiry']}`\n\n"
+            bot.send_message(message.chat.id, msg, parse_mode='Markdown', reply_markup=main_reply_keyboard(user_id))
+
     elif text == "👛 My Wallet":
-        data = USERS.get(user_id, {'balance': 0.0, 'referrals': 0})
         wallet_text = (
             "╔════════════════════╗\n"
             "     👛 **VIP WALLET**\n"
             "╚════════════════════╝\n\n"
             f"🆔 UID: `{user_id}`\n"
-            f"💰 Balance: **₹{data['balance']}**\n"
-            f"👥 Total Referrals: **{data['referrals']} Users**"
+            f"💰 Balance: **₹{user_data['balance']}**\n"
+            f"👥 Total Referrals: **{user_data['referrals']} Users**"
         )
         bot.send_message(message.chat.id, wallet_text, parse_mode='Markdown', reply_markup=main_reply_keyboard(user_id))
+
+    elif text == "➕ Add Money":
+        USER_STATE[user_id] = {'state': 'waiting_for_amount'}
+        bot.send_message(message.chat.id, "➕ **ADD MONEY**\n\n💵 *Kitna amount add karna hai? (Sirf numbers mein likhein, jaise: 100):*", parse_mode='Markdown')
 
     elif text == "👥 Refer & Earn":
         bot_uname = bot.get_me().username
         ref_link = f"https://t.me/{bot_uname}?start=ref_{user_id}"
         reward = SETTINGS['refer_reward']
-        user_data = USERS.get(user_id, {'referrals': 0, 'referred_users': []})
+        
+        ref_list_str = ""
+        if user_data['referred_users']:
+            ref_list_str = "\n📌 *Aapke referred users (UIDs):*\n" + "\n".join([f"• `{uid}`" for uid in user_data['referred_users']])
+        else:
+            ref_list_str = "\n📌 *Aapne abhi tak kisi ko refer nahi kiya hai.*"
+
         ref_text = (
             "🎁 **REFER & EARN PROGRAM**\n\n"
             f"1️⃣ Instant Joining Bonus: **₹{reward}** per refer!\n"
             f"2️⃣ Commission Bonus: **20%** jab aapka referred user koi bhi plan buy karega!\n\n"
-            f"👥 Total Referrals: **{user_data['referrals']} Users**\n\n"
+            f"👥 Total Referrals: **{user_data['referrals']} Users**\n"
+            f"{ref_list_str}\n\n"
             "🔗 *Your Invite Link:*\n"
             f"`{ref_link}`"
         )
@@ -325,7 +406,9 @@ def handle_admin_panels(call):
         return
 
     if call.data == 'admin_add_money':
-        ADMIN_STATE['action'] = 'add_bal_get_id'
+        if user_id not in ADMIN_STATE:
+            ADMIN_STATE[user_id] = {}
+        ADMIN_STATE[user_id]['action'] = 'add_bal_get_id'
         bot.send_message(call.message.chat.id, "📥 *Enter the Target User ID*:", parse_mode='Markdown')
 
     elif call.data == 'admin_edit_prices':
@@ -343,185 +426,38 @@ def handle_admin_panels(call):
         bot.send_message(call.message.chat.id, "⚙️ *Select what you want to edit:*", reply_markup=markup, parse_mode='Markdown')
 
     elif call.data == 'admin_stats':
-        bot.send_message(call.message.chat.id, f"📊 **Bot Statistics:**\n\n👥 Total Users: {len(USERS)}\n📦 Total Purchases: {len(PURCHASE_HISTORY)}", parse_mode='Markdown')
+        total_balance = sum([u['balance'] for u in USERS.values()])
+        bot.send_message(call.message.chat.id, f"📊 **Bot Statistics:**\n\n👥 Total Users: {len(USERS)}\n💰 Total User Balances: ₹{total_balance}\n📦 Total Purchases: {len(PURCHASE_HISTORY)}", parse_mode='Markdown')
 
     elif call.data.startswith('editccprice_'):
         plan_key = call.data.split('_')[1]
-        ADMIN_STATE['action'] = 'edit_cc_price'
-        ADMIN_STATE['plan_key'] = plan_key
-        bot.send_message(call.message.chat.id, f"💵 Enter new price display for CC Plan (e.g. ₹149):", parse_mode='Markdown')
+        if user_id not in ADMIN_STATE:
+            ADMIN_STATE[user_id] = {}
+        ADMIN_STATE[user_id]['action'] = 'edit_cc_price'
+        ADMIN_STATE[user_id]['plan_key'] = plan_key
+                bot.send_message(call.message.chat.id, f"💵 Enter new price display for CC Plan (e.g. ₹149):", parse_mode='Markdown')
 
     elif call.data.startswith('editccdetails_'):
         plan_key = call.data.split('_')[1]
-        ADMIN_STATE['action'] = 'edit_cc_details'
-        ADMIN_STATE['plan_key'] = plan_key
+        if user_id not in ADMIN_STATE:
+            ADMIN_STATE[user_id] = {}
+        ADMIN_STATE[user_id]['action'] = 'edit_cc_details'
+        ADMIN_STATE[user_id]['plan_key'] = plan_key
         bot.send_message(call.message.chat.id, f"📝 Enter new details format for CC Plan:", parse_mode='Markdown')
 
     elif call.data.startswith('editlikeprice_'):
         plan_key = call.data.split('_')[1]
-        ADMIN_STATE['action'] = 'edit_like_price'
-        ADMIN_STATE['plan_key'] = plan_key
+        if user_id not in ADMIN_STATE:
+            ADMIN_STATE[user_id] = {}
+        ADMIN_STATE[user_id]['action'] = 'edit_like_price'
+        ADMIN_STATE[user_id]['plan_key'] = plan_key
         bot.send_message(call.message.chat.id, f"💵 Enter new price display for Like Pack (e.g. ₹99):", parse_mode='Markdown')
 
     elif call.data.startswith('editlikedetails_'):
         plan_key = call.data.split('_')[1]
-        ADMIN_STATE['action'] = 'edit_like_details'
-        ADMIN_STATE['plan_key'] = plan_key
+        if user_id not in ADMIN_STATE:
+            ADMIN_STATE[user_id] = {}
+        ADMIN_STATE[user_id]['action'] = 'edit_like_details'
+        ADMIN_STATE[user_id]['plan_key'] = plan_key
         bot.send_message(call.message.chat.id, f"📝 Enter new description for Like Pack:", parse_mode='Markdown')
-
-@bot.callback_query_handler(func=lambda call: call.data in CC_PLANS.keys())
-def handle_cc_purchase(call):
-    user_id = call.from_user.id
-    if not check_subscription(user_id):
-        bot.answer_callback_query(call.id, "❌ Pehle sabhi channels join karein!", show_alert=True)
-        return
-
-    plan_key = call.data
-    plan = CC_PLANS.get(plan_key)
-    user_balance = USERS.get(user_id, {}).get('balance', 0.0)
-    
-    try:
-        price_val = float(plan['price'])
-    except:
-        price_val = 0.0
-    
-    markup = InlineKeyboardMarkup()
-    if user_balance >= price_val and price_val > 0:
-        markup.add(InlineKeyboardButton("✅ Confirm & Purchase Now", callback_data=f'confirmcc_{plan_key}'))
-    elif price_val == 0:
-        markup.add(InlineKeyboardButton("💬 Contact Admin for Custom Pack", url="https://t.me/Xenon_ask9"))
-    else:
-        markup.add(InlineKeyboardButton("❌ Insufficient Balance (Add Money)", callback_data='go_add_money'))
         
-    preview_msg = (
-        "╔════════════════════╗\n"
-        f"      📦 **{plan['name']}** 📦\n"
-        "╚════════════════════╝\n\n"
-        "⭐ **Rating:** `4.9 / 5.0` (Trusted Pack)\n"
-        f"💎 Value: **{plan['value']}**\n"
-        f"💰 Price: **{plan['display_price']}**\n"
-        f"👛 Your Wallet: **₹{user_balance}**\n\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-    bot.send_message(call.message.chat.id, preview_msg, reply_markup=markup, parse_mode='Markdown')
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('confirmcc_'))
-def confirm_cc_purchase(call):
-    user_id = call.from_user.id
-    plan_key = call.data.replace('confirmcc_', '')
-    plan = CC_PLANS.get(plan_key)
-    
-    price_val = float(plan['price'])
-    user_data = USERS.get(user_id, {'balance': 0.0, 'referred_by': None})
-    
-    if user_data['balance'] < price_val:
-        bot.answer_callback_query(call.id, "❌ Error: Insufficient balance in wallet!", show_alert=True)
-        return
-    
-    USERS[user_id]['balance'] -= price_val
-    
-    referred_by = user_data.get('referred_by')
-    if referred_by and referred_by in USERS:
-        commission = price_val * 0.20
-        USERS[referred_by]['balance'] += commission
-        bot.send_message(referred_by, f"🎁 *Commission Earned!* Aapke referred user ne plan buy kiya aur aapko **₹{commission}** (20%) commission mila hai!", parse_mode='Markdown')
-
-    PURCHASE_HISTORY.append({'user_id': user_id, 'plan': plan['name'], 'price': plan['display_price']})
-    
-    success_msg = (
-        "╔════════════════════╗\n"
-        "   📦 **PURCHASE SUCCESSFUL** 📦\n"
-        "╚════════════════════╝\n\n"
-        f"📦 Plan: {plan['name']}\n"
-        f"💎 Value: {plan['value']}\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"Here is your CC Data:\n{plan['details']}\n\n"
-        "⚠️ *Save this data securely!*"
-    )
-    bot.send_message(call.message.chat.id, success_msg, parse_mode='Markdown')
-    bot.send_message(ADMIN_ID, f"🔔 *New CC Store Order!*\nUser ID: `{user_id}` bought: {plan['name']} ({plan['display_price']})", parse_mode='Markdown')
-
-@bot.callback_query_handler(func=lambda call: call.data in LIKE_PLANS.keys())
-def handle_like_purchase(call):
-    user_id = call.from_user.id
-    if not check_subscription(user_id):
-        bot.answer_callback_query(call.id, "❌ Pehle sabhi channels join karein!", show_alert=True)
-        return
-
-    plan_key = call.data
-    plan = LIKE_PLANS.get(plan_key)
-    user_balance = USERS.get(user_id, {}).get('balance', 0.0)
-    
-    try:
-        price_val = float(plan['price'])
-    except:
-        price_val = 0.0
-    
-    markup = InlineKeyboardMarkup()
-    if user_balance >= price_val:
-        markup.add(InlineKeyboardButton("✅ Confirm & Purchase Now", callback_data=f'confirmlike_{plan_key}'))
-    else:
-        markup.add(InlineKeyboardButton("❌ Insufficient Balance (Add Money)", callback_data='go_add_money'))
-        
-    preview_msg = (
-        "╔════════════════════╗\n"
-        f"      📦 **{plan['name']}** 📦\n"
-        "╚════════════════════╝\n\n"
-        "⭐ **Rating:** `5.0 / 5.0` (Verified Instant Delivery)\n"
-        f"{plan['details']}\n\n"
-        f"💰 Price: **{plan['display_price']}**\n"
-        f"👛 Your Wallet: **₹{user_balance}**\n\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-    bot.send_message(call.message.chat.id, preview_msg, reply_markup=markup, parse_mode='Markdown')
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('confirmlike_'))
-def confirm_like_purchase(call):
-    user_id = call.from_user.id
-    plan_key = call.data.replace('confirmlike_', '')
-    plan = LIKE_PLANS.get(plan_key)
-    
-    price_val = float(plan['price'])
-    user_data = USERS.get(user_id, {'balance': 0.0, 'referred_by': None})
-    
-    if user_data['balance'] < price_val:
-        bot.answer_callback_query(call.id, "❌ Error: Insufficient balance in wallet!", show_alert=True)
-        return
-    
-    USERS[user_id]['balance'] -= price_val
-
-    referred_by = user_data.get('referred_by')
-    if referred_by and referred_by in USERS:
-        commission = price_val * 0.20
-        USERS[referred_by]['balance'] += commission
-        bot.send_message(referred_by, f"🎁 *Commission Earned!* Aapke referred user ne Like Pack buy kiya aur aapko **₹{commission}** (20%) commission mila hai!", parse_mode='Markdown')
-
-    expiry_date = (datetime.now() + timedelta(days=plan['days'])).strftime("%d-%m-%Y %H:%M")
-    
-    if 'active_plans' not in USERS[user_id]:
-        USERS[user_id]['active_plans'] = []
-    
-    USERS[user_id]['active_plans'].append({
-        'name': f"{plan['name']} ({plan['total']} Likes)",
-        'expiry': expiry_date
-    })
-    
-    PURCHASE_HISTORY.append({'user_id': user_id, 'plan': plan['name'], 'price': plan['display_price']})
-    
-    success_msg = (
-        "╔════════════════════╗\n"
-        "   🎉 **ORDER SUCCESSFUL** 🎉\n"
-        "╚════════════════════╝\n\n"
-        f"📦 Plan: {plan['name']}\n"
-        f"❤️ Total Likes: {plan['total']} ({plan['daily']} Daily)\n"
-        f"📅 Valid Till: `{expiry_date}`\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "🛡️ *Your active plan has been saved! Check 'My Active Plans'.*"
-    )
-    bot.send_message(call.message.chat.id, success_msg, parse_mode='Markdown')
-    bot.send_message(ADMIN_ID, f"🔔 *New Like Store Order!*\nUser ID: `{user_id}` bought: {plan['name']} ({plan['display_price']})", parse_mode='Markdown')
-
-if __name__ == '__main__':
-    print("💎 CC & Like Store Bot is running successfully...")
-    keep_alive()
-    bot.infinity_polling()
