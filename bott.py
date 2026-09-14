@@ -28,7 +28,11 @@ from telegram.ext import (
 # =========================================================
 
 # Render Environment Variable se token lega
-BOT_TOKEN = os.getenv("8878169821:AAG0IdLgKSV8agUzj89d0AP0yT4BkkajOwg", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN environment variable set karo.")
+    
 
 ADMIN_ID = 7161571409
 
