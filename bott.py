@@ -1,18 +1,11 @@
 import os
 import sqlite3
 import uuid
-import asyncio
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-import requests
 from flask import Flask
-from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import Forbidden, BadRequest
 from telegram.ext import (
     Application,
@@ -27,22 +20,14 @@ from telegram.ext import (
 # CONFIG
 # =========================================================
 
-# Render Environment Variable se token lega
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
 if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN environment variable set karo.")
-    
+    raise RuntimeError("BOT_TOKEN environment variable set karo.")
 
-ADMIN_ID = 7161571409
-
-UPI_ID = "sima6241@ptaxis"
-
-DB_FILE = "vipbot.db"
-
-SUPPORT_USERNAME = "@your_support"
-
-REFERRAL_REWARD = 2.0
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7161571409"))
+UPI_ID = os.getenv("UPI_ID", "sima6241@ptaxis")
+SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@your_support")
+DB_FILE = os.getenv("DB_FILE", "vipbot.db")
 
 REQUIRED_CHANNELS = [
     ("Bot Like Proof", "@botlikeproof", "https://t.me/botlikeproof"),
@@ -50,3943 +35,1651 @@ REQUIRED_CHANNELS = [
     ("Earning With Ask", "@eraningwithask", "https://t.me/eraningwithask"),
 ]
 
-INFO_API = (
-    "https://star-info-api.lovable.app/"
-    "functions/v1/info-api/accinfo"
-)
-
-BAN_API = (
-    "https://info.killersharmabot.online/"
-    "bancheck"
-)
-
-ICON_API = (
-    "https://star-icon-png.lovable.app/"
-    "png"
-)
-
 # =========================================================
 # RENDER WEB SERVER
 # =========================================================
 
 web_app = Flask(__name__)
 
-
 @web_app.get("/")
 def home():
-    return "VIP Bot is running ✅", 200
-
+    return "VIP Bot is running", 200
 
 @web_app.get("/health")
 def health():
     return "OK", 200
 
-
 def run_web():
     port = int(os.getenv("PORT", "10000"))
-
-    web_app.run(
-        host="0.0.0.0",
-        port=port,
-        use_reloader=False
-    )
-
+    web_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 # =========================================================
 # DATABASE
 # =========================================================
 
 def connect():
-    con = sqlite3.connect(
-        DB_FILE,
-        timeout=30
-    )
-
+    con = sqlite3.connect(DB_FILE, timeout=30)
+    con.row_factory = sqlite3.Row
     con.execute("PRAGMA busy_timeout=30000")
-
     return con
 
-
-def now():
-    return datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-
 def init_db():
-
     con = connect()
-    cur = con.cursor()
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        balance REAL NOT NULL DEFAULT 0,
+        referred_by INTEGER,
+        referral_paid INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            balance REAL DEFAULT 0,
-            referred_by INTEGER,
-            referral_rewarded INTEGER DEFAULT 0,
-            joined_gate INTEGER DEFAULT 0,
-            created TEXT
-        )
+    CREATE TABLE IF NOT EXISTS plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        daily_likes INTEGER NOT NULL DEFAULT 1,
+        days INTEGER NOT NULL,
+        price REAL NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        plan_code TEXT NOT NULL,
+        uid TEXT NOT NULL,
+        amount REAL NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        approved_at TEXT,
+        expires_at TEXT,
+        note TEXT DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS deposits (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        utr TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        reviewed_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        amount REAL NOT NULL,
+        balance_after REAL NOT NULL,
+        reference TEXT,
+        created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS referrals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        referrer_id INTEGER NOT NULL,
+        referred_id INTEGER NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        reward REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        paid_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS cc_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        price REAL NOT NULL,
+        value_text TEXT NOT NULL,
+        description TEXT NOT NULL,
+        stock INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS cc_stock (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id INTEGER NOT NULL,
+        code TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'available',
+        sold_to INTEGER,
+        sold_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
     """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS plans (
-            plan_id TEXT PRIMARY KEY,
-            name TEXT,
-            days INTEGER,
-            daily INTEGER,
-            price REAL,
-            active INTEGER DEFAULT 1
+    defaults = [
+        ("referral_reward", "2"),
+        ("cc_name", "Digital Code"),
+        ("cc_price", "100"),
+        ("cc_value", "₹3,000 value"),
+        ("cc_description", "Authorized digital item/code. Delivery is automatic from available stock."),
+    ]
+    for key, value in defaults:
+        con.execute(
+            "INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",
+            (key, value),
         )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            order_id TEXT PRIMARY KEY,
-            user_id INTEGER,
-            uid TEXT,
-            plan_id TEXT,
-            amount REAL,
-            status TEXT,
-            start_time TEXT,
-            expiry_time TEXT,
-            created TEXT
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS deposits (
-            deposit_id TEXT PRIMARY KEY,
-            user_id INTEGER,
-            amount REAL,
-            utr TEXT,
-            status TEXT,
-            created TEXT
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            amount REAL,
-            type TEXT,
-            note TEXT,
-            created TEXT
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS cc_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item TEXT UNIQUE,
-            sold INTEGER DEFAULT 0,
-            sold_to INTEGER
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-
-    defaults = {
-        "referral_reward": "2",
-        "cc_name": "💎 Premium Digital Store",
-        "cc_price": "100",
-        "cc_value": "₹3,000",
-        "cc_description": (
-            "Premium authorized digital product\n"
-            "⚡ Instant delivery\n"
-            "🆔 UID not required"
-        ),
-    }
-
-    for key, value in defaults.items():
-
-        cur.execute("""
-            INSERT OR IGNORE INTO settings
-            (key, value)
-            VALUES (?, ?)
-        """, (key, value))
 
     plans = [
-        ("demo", "❤️ Demo Like", 1, 1, 5),
-        ("starter", "❤️ Starter", 15, 220, 59),
-        ("pro", "🔥 Pro", 30, 220, 99),
+        ("demo", "🎁 Demo", 1, 1, 5),
+        ("starter", "🚀 Starter", 220, 15, 59),
+        ("pro", "💎 Pro", 220, 30, 99),
     ]
-
-    for plan in plans:
-
-        cur.execute("""
-            INSERT OR IGNORE INTO plans
-            (plan_id, name, days, daily, price, active)
-            VALUES (?, ?, ?, ?, ?, 1)
-        """, plan)
-
-    # Existing DB migration
-    cur.execute("PRAGMA table_info(orders)")
-
-    columns = [
-        x[1]
-        for x in cur.fetchall()
-    ]
-
-    if "start_time" not in columns:
-
-        cur.execute(
-            "ALTER TABLE orders ADD COLUMN start_time TEXT"
-        )
-
-    if "expiry_time" not in columns:
-
-        cur.execute(
-            "ALTER TABLE orders ADD COLUMN expiry_time TEXT"
+    for code, name, daily, days, price in plans:
+        con.execute(
+            """INSERT OR IGNORE INTO plans
+               (code,name,daily_likes,days,price,active)
+               VALUES(?,?,?,?,?,1)""",
+            (code, name, daily, days, price),
         )
 
     con.commit()
     con.close()
 
+def now():
+    return datetime.now(timezone.utc)
 
-def setting(key, default=""):
+def now_text():
+    return now().isoformat()
 
+def fmt_date(value):
+    if not value:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(value)
+        return dt.astimezone().strftime("%d-%m-%Y %I:%M %p")
+    except Exception:
+        return value
+
+def get_setting(key, default=""):
     con = connect()
-    cur = con.cursor()
-
-    cur.execute(
-        "SELECT value FROM settings WHERE key=?",
-        (key,)
-    )
-
-    row = cur.fetchone()
-
+    row = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     con.close()
-
-    return row[0] if row else default
-
+    return row["value"] if row else default
 
 def set_setting(key, value):
-
     con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        INSERT INTO settings(key,value)
-        VALUES (?,?)
-        ON CONFLICT(key)
-        DO UPDATE SET value=excluded.value
-    """, (
-        key,
-        str(value)
-    ))
-
-    con.commit()
-    con.close()
-
-
-# =========================================================
-# USER / WALLET
-# =========================================================
-
-def create_user(user_id, username=""):
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        INSERT OR IGNORE INTO users
-        (user_id, username, created)
-        VALUES (?, ?, ?)
-    """, (
-        user_id,
-        username,
-        now()
-    ))
-
-    cur.execute("""
-        UPDATE users
-        SET username=?
-        WHERE user_id=?
-    """, (
-        username,
-        user_id
-    ))
-
-    con.commit()
-    con.close()
-
-
-def get_balance(user_id):
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute(
-        "SELECT balance FROM users WHERE user_id=?",
-        (user_id,)
+    con.execute(
+        """INSERT INTO settings(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (key, str(value)),
     )
-
-    row = cur.fetchone()
-
+    con.commit()
     con.close()
 
-    return float(row[0]) if row else 0.0
-
-
-def credit(user_id, amount, note):
-
+def ensure_user(tg_user, referred_by=None):
     con = connect()
-    cur = con.cursor()
+    row = con.execute(
+        "SELECT user_id FROM users WHERE user_id=?",
+        (tg_user.id,),
+    ).fetchone()
 
-    cur.execute("""
-        UPDATE users
-        SET balance=balance+?
-        WHERE user_id=?
-    """, (
-        amount,
-        user_id
-    ))
+    if row:
+        con.execute(
+            "UPDATE users SET username=?, first_name=? WHERE user_id=?",
+            (tg_user.username or "", tg_user.first_name or "", tg_user.id),
+        )
+    else:
+        valid_ref = None
+        if referred_by and referred_by != tg_user.id:
+            ref_exists = con.execute(
+                "SELECT user_id FROM users WHERE user_id=?",
+                (referred_by,),
+            ).fetchone()
+            if ref_exists:
+                valid_ref = referred_by
 
-    cur.execute("""
-        INSERT INTO transactions
-        (user_id, amount, type, note, created)
-        VALUES (?, ?, 'CREDIT', ?, ?)
-    """, (
-        user_id,
-        amount,
-        note,
-        now()
-    ))
+        con.execute(
+            """INSERT INTO users
+               (user_id,username,first_name,referred_by,created_at)
+               VALUES(?,?,?,?,?)""",
+            (
+                tg_user.id,
+                tg_user.username or "",
+                tg_user.first_name or "",
+                valid_ref,
+                now_text(),
+            ),
+        )
+        if valid_ref:
+            con.execute(
+                """INSERT OR IGNORE INTO referrals
+                   (referrer_id,referred_id,status,reward,created_at)
+                   VALUES(?,?,?,?,?)""",
+                (valid_ref, tg_user.id, "pending", 0, now_text()),
+            )
 
     con.commit()
     con.close()
 
-
-def debit(user_id, amount, note):
-
+def balance(user_id):
     con = connect()
-    cur = con.cursor()
+    row = con.execute(
+        "SELECT balance FROM users WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    con.close()
+    return float(row["balance"]) if row else 0.0
 
-    # IMPORTANT:
-    # Balance negative nahi hone dena.
-    cur.execute("""
-        UPDATE users
-        SET balance=balance-?
-        WHERE user_id=?
-        AND balance>=?
-    """, (
-        amount,
-        amount,
-        amount
-    ))
-
-    changed = cur.rowcount
-
-    if changed != 1:
-
+def change_balance(user_id, amount, kind, reference=""):
+    con = connect()
+    con.execute("BEGIN IMMEDIATE")
+    row = con.execute(
+        "SELECT balance FROM users WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if not row:
         con.rollback()
         con.close()
+        return False, 0.0
 
-        return False
+    old = float(row["balance"])
+    new = old + float(amount)
+    if new < -0.00001:
+        con.rollback()
+        con.close()
+        return False, old
 
-    cur.execute("""
-        INSERT INTO transactions
-        (user_id, amount, type, note, created)
-        VALUES (?, ?, 'DEBIT', ?, ?)
-    """, (
-        user_id,
-        -amount,
-        note,
-        now()
-    ))
-
+    con.execute(
+        "UPDATE users SET balance=? WHERE user_id=?",
+        (new, user_id),
+    )
+    con.execute(
+        """INSERT INTO transactions
+           (user_id,kind,amount,balance_after,reference,created_at)
+           VALUES(?,?,?,?,?,?)""",
+        (user_id, kind, amount, new, reference, now_text()),
+    )
     con.commit()
     con.close()
-
-    return True
-
+    return True, new
 
 # =========================================================
-# STATE
+# UI
 # =========================================================
+
+def main_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            ["💰 Wallet", "🛒 Buy Like"],
+            ["📦 My Orders", "🎁 Referral"],
+            ["🏪 CC Store", "🆔 Check UID"],
+            ["🛟 Support"],
+        ],
+        resize_keyboard=True,
+    )
+
+def admin_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Dashboard", callback_data="adm_dashboard"),
+            InlineKeyboardButton("👥 Users", callback_data="adm_users"),
+        ],
+        [
+            InlineKeyboardButton("💰 Wallet", callback_data="adm_wallet"),
+            InlineKeyboardButton("➕ Add Balance", callback_data="adm_add"),
+        ],
+        [
+            InlineKeyboardButton("➖ Deduct", callback_data="adm_deduct"),
+            InlineKeyboardButton("📒 Transactions", callback_data="adm_tx"),
+        ],
+        [
+            InlineKeyboardButton("💳 Pending UTR", callback_data="adm_utr"),
+            InlineKeyboardButton("❤️ Pending Likes", callback_data="adm_likes"),
+        ],
+        [
+            InlineKeyboardButton("📦 All Orders", callback_data="adm_orders"),
+            InlineKeyboardButton("🎁 Referrals", callback_data="adm_refs"),
+        ],
+        [
+            InlineKeyboardButton("🏪 CC Store", callback_data="adm_cc"),
+            InlineKeyboardButton("📦 CC Stock", callback_data="adm_stock"),
+        ],
+        [
+            InlineKeyboardButton("💸 Referral Reward", callback_data="adm_reward"),
+            InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast"),
+        ],
+    ])
 
 def clear_state(context):
     context.user_data.clear()
 
-
 # =========================================================
-# CHANNEL JOIN
+# CHANNEL CHECK
 # =========================================================
 
-async def check_channels(user_id, bot):
-
-    missing = []
-
-    for name, username, link in REQUIRED_CHANNELS:
-
+async def channels_joined(context, user_id):
+    for _, chat, _ in REQUIRED_CHANNELS:
         try:
-
-            member = await bot.get_chat_member(
-                username,
-                user_id
-            )
-
-            if member.status in (
-                "left",
-                "kicked"
-            ):
-
-                missing.append(
-                    (name, link)
-                )
-
+            member = await context.bot.get_chat_member(chat, user_id)
+            if member.status in ("left", "kicked"):
+                return False
         except Exception:
-
-            missing.append(
-                (name, link)
-            )
-
-    return missing
-
-
-async def show_join_gate(update, context):
-
-    buttons = []
-
-    for name, username, link in REQUIRED_CHANNELS:
-
-        buttons.append([
-            InlineKeyboardButton(
-                f"📢 JOIN {name.upper()}",
-                url=link
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "✅ CHECK JOIN",
-            callback_data="check_join"
-        )
-    ])
-
-    text = (
-        "╔════════════════════════════╗\n"
-        "       🔐 VIP ACCESS LOCKED\n"
-        "╚════════════════════════════╝\n\n"
-        "Bot start karne ke liye pehle "
-        "required channels join karo.\n\n"
-        "👇 Join ke baad CHECK JOIN dabao."
-    )
-
-    if update.message:
-
-        await update.message.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-    else:
-
-        await update.callback_query.message.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-
-async def is_verified(update, context):
-
-    user_id = update.effective_user.id
-
-    if user_id == ADMIN_ID:
-        return True
-
-    missing = await check_channels(
-        user_id,
-        context.bot
-    )
-
-    if missing:
-
-        await show_join_gate(
-            update,
-            context
-        )
-
-        return False
-
-    create_user(
-        user_id,
-        update.effective_user.username or ""
-    )
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        UPDATE users
-        SET joined_gate=1
-        WHERE user_id=?
-    """, (user_id,))
-
-    cur.execute("""
-        SELECT referred_by, referral_rewarded
-        FROM users
-        WHERE user_id=?
-    """, (user_id,))
-
-    row = cur.fetchone()
-
-    if row:
-
-        referred_by, rewarded = row
-
-        if referred_by and not rewarded:
-
-            reward = float(
-                setting(
-                    "referral_reward",
-                    "2"
-                )
-            )
-
-            cur.execute("""
-                UPDATE users
-                SET referral_rewarded=1
-                WHERE user_id=?
-            """, (user_id,))
-
-            cur.execute("""
-                UPDATE users
-                SET balance=balance+?
-                WHERE user_id=?
-            """, (
-                reward,
-                referred_by
-            ))
-
-            cur.execute("""
-                INSERT INTO transactions
-                (user_id, amount, type, note, created)
-                VALUES (?, ?, 'CREDIT', ?, ?)
-            """, (
-                referred_by,
-                reward,
-                "Referral Reward",
-                now()
-            ))
-
-            con.commit()
-
-            try:
-
-                await context.bot.send_message(
-                    referred_by,
-                    "🎉 **REFERRAL VERIFIED!**\n\n"
-                    f"💰 Reward: ₹{reward:g}\n"
-                    f"💵 Balance: ₹{get_balance(referred_by):.2f}",
-                    parse_mode="Markdown"
-                )
-
-            except Exception:
-                pass
-
-    con.commit()
-    con.close()
-
+            # If the bot cannot check a channel, don't falsely block the user.
+            continue
     return True
 
-
-# =========================================================
-# KEYBOARD
-# =========================================================
-
-def main_keyboard():
-
-    return ReplyKeyboardMarkup(
-        [
-            ["❤️ Buy Like", "🛒 CC Store"],
-            ["🔍 Check UID", "💰 Wallet"],
-            ["👥 Refer & Earn", "➕ Add Money"],
-            ["📦 My Orders", "🆘 Support"],
-        ],
-        resize_keyboard=True
+async def join_required(update, context):
+    buttons = [
+        [InlineKeyboardButton(name, url=url)]
+        for name, _, url in REQUIRED_CHANNELS
+    ]
+    buttons.append([InlineKeyboardButton("✅ Check Join", callback_data="check_join")])
+    await update.effective_message.reply_text(
+        "📢 Pehle required channels join karo, phir Check Join dabao.",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
-
 # =========================================================
-# START
+# START / MENU
 # =========================================================
 
-async def start(update, context):
-
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    ref = None
 
-    create_user(
-        user.id,
-        user.username or ""
-    )
+    if context.args:
+        arg = context.args[0]
+        if arg.startswith("ref_"):
+            try:
+                ref = int(arg[4:])
+            except ValueError:
+                ref = None
 
-    if context.args and context.args[0].isdigit():
-
-        ref_id = int(context.args[0])
-
-        if ref_id != user.id:
-
-            con = connect()
-            cur = con.cursor()
-
-            cur.execute("""
-                SELECT referred_by
-                FROM users
-                WHERE user_id=?
-            """, (user.id,))
-
-            row = cur.fetchone()
-
-            if row and row[0] is None:
-
-                cur.execute("""
-                    UPDATE users
-                    SET referred_by=?
-                    WHERE user_id=?
-                """, (
-                    ref_id,
-                    user.id
-                ))
-
-            con.commit()
-            con.close()
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
+    ensure_user(user, ref)
     clear_state(context)
 
-    await update.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "          👑 VIP STORE\n"
-        "╚════════════════════════════╝\n\n"
-        "✨ Premium Service Panel\n"
-        "⚡ Fast Processing\n"
-        "💰 Secure Wallet\n"
-        "🎁 Refer & Earn\n\n"
-        "👇 Service select karo.",
-        reply_markup=main_keyboard()
-    )
-
-
-# =========================================================
-# LIKE PLANS
-# =========================================================
-
-async def buy_like(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
+    if not await channels_joined(context, user.id):
+        await join_required(update, context)
         return
 
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT plan_id, name, days, daily, price
-        FROM plans
-        WHERE active=1
-        ORDER BY price
-    """)
-
-    plans = cur.fetchall()
-
-    con.close()
-
-    buttons = []
-
-    for plan_id, name, days, daily, price in plans:
-
-        buttons.append([
-            InlineKeyboardButton(
-                f"{name} • ₹{price:g}",
-                callback_data=f"likeplan:{plan_id}"
-            )
-        ])
-
-    text = (
-        "╔════════════════════════════╗\n"
-        "          ❤️ LIKE PLANS\n"
-        "╚════════════════════════════╝\n\n"
-    )
-
-    for plan_id, name, days, daily, price in plans:
-
-        text += (
-            f"💎 {name}\n"
-            f"❤️ {daily} Like/day\n"
-            f"📅 {days} Day(s)\n"
-            f"💰 ₹{price:g}\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-        )
-
-    text += (
-        "\n⚠️ ₹5 Demo Plan:\n"
-        "24 hours mein sirf 1 order allowed."
-    )
-
     await update.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(buttons)
+        f"👋 Welcome {user.first_name or 'User'}!\n\n"
+        f"💰 Wallet: ₹{balance(user.id):.2f}\n\n"
+        "Menu se option choose karo.",
+        reply_markup=main_keyboard(),
     )
 
-
-async def like_plan_callback(update, context):
-
+async def check_join(update, context):
     q = update.callback_query
-
     await q.answer()
 
-    plan_id = q.data.split(
-        ":",
-        1
-    )[1]
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT name, days, daily, price
-        FROM plans
-        WHERE plan_id=? AND active=1
-    """, (plan_id,))
-
-    row = cur.fetchone()
-
-    con.close()
-
-    if not row:
-
+    if await channels_joined(context, q.from_user.id):
         await q.message.reply_text(
-            "❌ Plan unavailable."
+            "✅ Channel verification complete.\n\nMenu open hai.",
+            reply_markup=main_keyboard(),
         )
-
-        return
-
-    name, days, daily, price = row
-
-    user_id = q.from_user.id
-
-    # Demo cooldown
-    if plan_id == "demo":
-
-        con = connect()
-        cur = con.cursor()
-
-        since = (
-            datetime.now()
-            - timedelta(hours=24)
-        ).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM orders
-            WHERE user_id=?
-            AND plan_id='demo'
-            AND created>=?
-            AND status NOT IN ('Cancelled','Rejected')
-        """, (
-            user_id,
-            since
-        ))
-
-        used = cur.fetchone()[0]
-
-        con.close()
-
-        if used >= 1:
-
-            await q.message.reply_text(
-                "⏳ **DEMO PLAN COOLDOWN**\n\n"
-                "₹5 Demo plan 24 hours mein "
-                "sirf 1 baar liya ja sakta hai.",
-                parse_mode="Markdown"
-            )
-
-            return
-
-    context.user_data.clear()
-
-    context.user_data["like_plan"] = plan_id
-    context.user_data["waiting_like_uid"] = True
-
-    await q.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "       📦 LIKE ORDER\n"
-        "╚════════════════════════════╝\n\n"
-        f"💎 {name}\n"
-        f"❤️ {daily} Like/day\n"
-        f"📅 {days} Day(s)\n"
-        f"💰 ₹{price:g}\n\n"
-        "🆔 **Ab sirf game UID bhejo.**\n\n"
-        "⚠️ UTR yahan mat bhejna.",
-        parse_mode="Markdown"
-    )
-
-
-async def like_uid_handler(update, context):
-
-    uid = update.message.text.strip()
-
-    if not uid.isdigit():
-
-        await update.message.reply_text(
-            "❌ UID sirf numbers mein bhejo."
-        )
-
-        return
-
-    plan_id = context.user_data.get(
-        "like_plan"
-    )
-
-    if not plan_id:
-
-        clear_state(context)
-
-        await update.message.reply_text(
-            "❌ Order session expired.\n"
-            "❤️ Buy Like se dobara start karo.",
-            reply_markup=main_keyboard()
-        )
-
-        return
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT name, days, daily, price
-        FROM plans
-        WHERE plan_id=? AND active=1
-    """, (plan_id,))
-
-    row = cur.fetchone()
-
-    con.close()
-
-    if not row:
-
-        clear_state(context)
-
-        return
-
-    name, days, daily, price = row
-
-    user_id = update.effective_user.id
-
-    balance = get_balance(user_id)
-
-    if balance < price:
-
-        clear_state(context)
-
-        await update.message.reply_text(
-            "❌ **LOW WALLET BALANCE**\n\n"
-            f"💰 Required: ₹{price:g}\n"
-            f"💵 Balance: ₹{balance:.2f}\n\n"
-            "➕ Add Money karke dobara try karo.",
-            parse_mode="Markdown",
-            reply_markup=main_keyboard()
-        )
-
-        return
-
-    # Demo check again
-    if plan_id == "demo":
-
-        con = connect()
-        cur = con.cursor()
-
-        since = (
-            datetime.now()
-            - timedelta(hours=24)
-        ).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM orders
-            WHERE user_id=?
-            AND plan_id='demo'
-            AND created>=?
-            AND status NOT IN ('Cancelled','Rejected')
-        """, (
-            user_id,
-            since
-        ))
-
-        used = cur.fetchone()[0]
-
-        con.close()
-
-        if used >= 1:
-
-            clear_state(context)
-
-            await update.message.reply_text(
-                "⏳ Demo already used in last 24 hours.",
-                reply_markup=main_keyboard()
-            )
-
-            return
-
-    # Reserve payment immediately.
-    # This prevents user from spending the same wallet
-    # balance before admin approval.
-    if not debit(
-        user_id,
-        price,
-        "Reserved Like Plan Payment"
-    ):
-
-        clear_state(context)
-
-        await update.message.reply_text(
-            "❌ Wallet balance change nahi ho saka.\n"
-            "Please try again.",
-            reply_markup=main_keyboard()
-        )
-
-        return
-
-    order_id = (
-        "ORD-"
-        + uuid.uuid4().hex[:8].upper()
-    )
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        INSERT INTO orders
-        (order_id, user_id, uid, plan_id,
-         amount, status, start_time,
-         expiry_time, created)
-        VALUES (?, ?, ?, ?, ?, 'Pending Approval',
-                NULL, NULL, ?)
-    """, (
-        order_id,
-        user_id,
-        uid,
-        plan_id,
-        price,
-        now()
-    ))
-
-    con.commit()
-    con.close()
-
-    clear_state(context)
-
-    await update.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "       ⏳ ORDER SUBMITTED\n"
-        "╚════════════════════════════╝\n\n"
-        f"🧾 Order: `{order_id}`\n"
-        f"🆔 UID: `{uid}`\n"
-        f"📦 Plan: {name}\n"
-        f"❤️ {daily}/day\n"
-        f"📅 {days} Day(s)\n"
-        f"💰 Price: ₹{price:g}\n\n"
-        "📌 Status: **PENDING APPROVAL**\n\n"
-        "Admin approval ke baad plan activate hoga.",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard()
-    )
-
-    try:
-
-        await context.bot.send_message(
-            ADMIN_ID,
-            "🔔 **NEW LIKE PLAN REQUEST**\n\n"
-            f"🧾 `{order_id}`\n"
-            f"👤 User: `{user_id}`\n"
-            f"🆔 UID: `{uid}`\n"
-            f"📦 {name}\n"
-            f"❤️ {daily}/day\n"
-            f"📅 {days} days\n"
-            f"💰 ₹{price:g}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "✅ APPROVE",
-                        callback_data=f"likeapprove:{order_id}"
-                    ),
-                    InlineKeyboardButton(
-                        "❌ REJECT",
-                        callback_data=f"likereject:{order_id}"
-                    )
-                ]
-            ])
-        )
-
-    except Exception as e:
-
-        print(
-            "Admin notification error:",
-            e
-        )
-
+    else:
+        await q.message.reply_text("❌ Abhi required channels join nahi hue.")
 
 # =========================================================
-# LIKE ADMIN APPROVAL
-# =========================================================
-
-async def like_approval(update, context):
-
-    q = update.callback_query
-
-    if q.from_user.id != ADMIN_ID:
-
-        await q.answer(
-            "❌ Admin only.",
-            show_alert=True
-        )
-
-        return
-
-    await q.answer()
-
-    action, order_id = q.data.split(
-        ":",
-        1
-    )
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT user_id, uid, plan_id,
-               amount, status
-        FROM orders
-        WHERE order_id=?
-    """, (order_id,))
-
-    row = cur.fetchone()
-
-    if not row:
-
-        con.close()
-
-        await q.message.reply_text(
-            "❌ Order not found."
-        )
-
-        return
-
-    user_id, uid, plan_id, amount, status = row
-
-    if status != "Pending Approval":
-
-        con.close()
-
-        await q.message.reply_text(
-            "⚠️ Order already processed."
-        )
-
-        return
-
-    # REJECT
-    if action == "likereject":
-
-        cur.execute("""
-            UPDATE orders
-            SET status='Rejected'
-            WHERE order_id=?
-        """, (order_id,))
-
-        con.commit()
-        con.close()
-
-        # Refund reserved wallet amount
-        credit(
-            user_id,
-            amount,
-            f"Refund Like Order {order_id}"
-        )
-
-        await q.edit_message_text(
-            f"❌ Order `{order_id}` rejected.\n"
-            f"💰 ₹{amount:g} refunded.",
-            parse_mode="Markdown"
-        )
-
-        try:
-
-            await context.bot.send_message(
-                user_id,
-                "❌ **LIKE PLAN REJECTED**\n\n"
-                f"🧾 Order: `{order_id}`\n"
-                f"💰 Refund: ₹{amount:g}\n"
-                f"💵 Balance: ₹{get_balance(user_id):.2f}",
-                parse_mode="Markdown"
-            )
-
-        except Exception:
-            pass
-
-        return
-
-    # APPROVE
-    start_time = datetime.now()
-
-    expiry = (
-        start_time
-        + timedelta(
-            days=int(
-                get_plan_days(plan_id)
-            )
-        )
-    )
-
-    start_str = start_time.strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    expiry_str = expiry.strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    cur.execute("""
-        UPDATE orders
-        SET status='Active',
-            start_time=?,
-            expiry_time=?
-        WHERE order_id=?
-        AND status='Pending Approval'
-    """, (
-        start_str,
-        expiry_str,
-        order_id
-    ))
-
-    changed = cur.rowcount
-
-    con.commit()
-    con.close()
-
-    if changed != 1:
-
-        await q.message.reply_text(
-            "⚠️ Order already processed."
-        )
-
-        return
-
-    plan_name = get_plan_name(
-        plan_id
-    )
-
-    await q.edit_message_text(
-        "✅ **PLAN APPROVED & ACTIVATED**\n\n"
-        f"🧾 `{order_id}`\n"
-        f"👤 `{user_id}`\n"
-        f"🆔 `{uid}`\n"
-        f"📦 {plan_name}\n"
-        f"💰 ₹{amount:g}\n"
-        f"⏰ Expiry: `{expiry_str}`",
-        parse_mode="Markdown"
-    )
-
-    try:
-
-        await context.bot.send_message(
-            user_id,
-            "╔════════════════════════════╗\n"
-            "       🎉 PLAN ACTIVATED\n"
-            "╚════════════════════════════╝\n\n"
-            f"🧾 Order: `{order_id}`\n"
-            f"🆔 UID: `{uid}`\n"
-            f"📦 Plan: {plan_name}\n"
-            f"💰 Paid: ₹{amount:g}\n\n"
-            f"🟢 Start: `{start_str}`\n"
-            f"🔴 Expires: `{expiry_str}`\n\n"
-            "📌 Status: **ACTIVE**",
-            parse_mode="Markdown"
-        )
-
-    except Exception:
-        pass
-
-
-def get_plan_name(plan_id):
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute(
-        "SELECT name FROM plans WHERE plan_id=?",
-        (plan_id,)
-    )
-
-    row = cur.fetchone()
-
-    con.close()
-
-    return row[0] if row else plan_id
-
-
-def get_plan_days(plan_id):
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute(
-        "SELECT days FROM plans WHERE plan_id=?",
-        (plan_id,)
-    )
-
-    row = cur.fetchone()
-
-    con.close()
-
-    return int(row[0]) if row else 1
-
-
-# =========================================================
-# ADD MONEY
-# =========================================================
-
-async def add_money(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
-    clear_state(context)
-
-    context.user_data["deposit_amount"] = True
-
-    # Callback se aane par update.message None hota hai.
-    message = (
-        update.message
-        if update.message
-        else update.callback_query.message
-    )
-
-    await message.reply_text(
-        "╔════════════════════════════╗\n"
-        "          ➕ ADD MONEY\n"
-        "╚════════════════════════════╝\n\n"
-        f"💳 UPI ID:\n`{UPI_ID}`\n\n"
-        "💰 Amount bhejo.\n"
-        "Example: `100`\n\n"
-        "Payment ke baad UTR submit karna hoga.",
-        parse_mode="Markdown"
-    )
-
-
-async def deposit_amount_handler(update, context):
-
-    try:
-
-        amount = float(
-            update.message.text.strip()
-        )
-
-    except ValueError:
-
-        await update.message.reply_text(
-            "❌ Valid amount bhejo.\nExample: 100"
-        )
-
-        return
-
-    if amount <= 0:
-
-        await update.message.reply_text(
-            "❌ Amount 0 se zyada hona chahiye."
-        )
-
-        return
-
-    clear_state(context)
-
-    context.user_data["waiting_utr"] = True
-    context.user_data["deposit_value"] = amount
-
-    await update.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "        💳 PAYMENT STEP\n"
-        "╚════════════════════════════╝\n\n"
-        f"💰 Amount: ₹{amount:.2f}\n"
-        f"💳 UPI: `{UPI_ID}`\n\n"
-        "Payment complete karne ke baad "
-        "**UTR / Transaction ID** bhejo.",
-        parse_mode="Markdown"
-    )
-
-
-async def utr_handler(update, context):
-
-    utr = update.message.text.strip()
-
-    amount = context.user_data.get(
-        "deposit_value"
-    )
-
-    if amount is None:
-
-        clear_state(context)
-
-        await update.message.reply_text(
-            "❌ Deposit session expired."
-        )
-
-        return
-
-    if len(utr) < 4:
-
-        await update.message.reply_text(
-            "❌ Valid UTR bhejo."
-        )
-
-        return
-
-    user_id = update.effective_user.id
-
-    deposit_id = (
-        "DEP-"
-        + uuid.uuid4().hex[:8].upper()
-    )
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        INSERT INTO deposits
-        (deposit_id, user_id, amount,
-         utr, status, created)
-        VALUES (?, ?, ?, ?, 'pending', ?)
-    """, (
-        deposit_id,
-        user_id,
-        amount,
-        utr,
-        now()
-    ))
-
-    con.commit()
-    con.close()
-
-    clear_state(context)
-
-    await update.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "       🧾 UTR SUBMITTED\n"
-        "╚════════════════════════════╝\n\n"
-        f"🧾 Request: `{deposit_id}`\n"
-        f"💰 Amount: ₹{amount:.2f}\n"
-        f"🔢 UTR: `{utr}`\n\n"
-        "⏳ Admin verification pending.",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard()
-    )
-
-    try:
-
-        await context.bot.send_message(
-            ADMIN_ID,
-            "🔔 **NEW UTR REQUEST**\n\n"
-            f"🧾 `{deposit_id}`\n"
-            f"👤 User: `{user_id}`\n"
-            f"💰 ₹{amount:.2f}\n"
-            f"🔢 UTR: `{utr}`",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "✅ APPROVE",
-                        callback_data=f"depositapprove:{deposit_id}"
-                    ),
-                    InlineKeyboardButton(
-                        "❌ REJECT",
-                        callback_data=f"depositreject:{deposit_id}"
-                    )
-                ]
-            ])
-        )
-
-    except Exception as e:
-
-        print(
-            "UTR admin notification error:",
-            e
-        )
-
-
-# =========================================================
-# DEPOSIT APPROVAL
-# =========================================================
-
-async def deposit_action(update, context):
-
-    q = update.callback_query
-
-    if q.from_user.id != ADMIN_ID:
-
-        await q.answer(
-            "❌ Admin only.",
-            show_alert=True
-        )
-
-        return
-
-    await q.answer()
-
-    action, deposit_id = q.data.split(
-        ":",
-        1
-    )
-
-    con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT user_id, amount, utr, status
-        FROM deposits
-        WHERE deposit_id=?
-    """, (deposit_id,))
-
-    row = cur.fetchone()
-
-    if not row:
-
-        con.close()
-
-        await q.message.reply_text(
-            "❌ Deposit not found."
-        )
-
-        return
-
-    user_id, amount, utr, status = row
-
-    if status != "pending":
-
-        con.close()
-
-        await q.message.reply_text(
-            "⚠️ Already processed."
-        )
-
-        return
-
-    if action == "depositreject":
-
-        cur.execute("""
-            UPDATE deposits
-            SET status='rejected'
-            WHERE deposit_id=?
-            AND status='pending'
-        """, (deposit_id,))
-
-        con.commit()
-        con.close()
-
-        await q.edit_message_text(
-            f"❌ Deposit `{deposit_id}` rejected.",
-            parse_mode="Markdown"
-        )
-
-        try:
-
-            await context.bot.send_message(
-                user_id,
-                "❌ **PAYMENT REJECTED**\n\n"
-                f"🧾 `{deposit_id}`\n"
-                "Agar payment successful thi to support se contact karo.",
-                parse_mode="Markdown"
-            )
-
-        except Exception:
-            pass
-
-        return
-
-    cur.execute("""
-        UPDATE deposits
-        SET status='approved'
-        WHERE deposit_id=?
-        AND status='pending'
-    """, (deposit_id,))
-
-    changed = cur.rowcount
-
-    con.commit()
-    con.close()
-
-    if changed != 1:
-
-        await q.message.reply_text(
-            "⚠️ Already processed."
-        )
-
-        return
-
-    credit(
-        user_id,
-        amount,
-        f"UTR Approved {deposit_id}"
-    )
-
-    await q.edit_message_text(
-        "✅ **PAYMENT APPROVED**\n\n"
-        f"🧾 `{deposit_id}`\n"
-        f"👤 `{user_id}`\n"
-        f"💰 ₹{amount:.2f}",
-        parse_mode="Markdown"
-    )
-
-    try:
-
-        await context.bot.send_message(
-            user_id,
-            "╔════════════════════════════╗\n"
-            "       💰 WALLET CREDITED\n"
-            "╚════════════════════════════╝\n\n"
-            f"➕ Added: ₹{amount:.2f}\n"
-            f"💵 Balance: ₹{get_balance(user_id):.2f}",
-        )
-
-    except Exception:
-        pass
-
-
-# =========================================================
-# WALLET
+# WALLET / DEPOSIT
 # =========================================================
 
 async def wallet(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
-    user_id = update.effective_user.id
-
+    clear_state(context)
+    uid = update.effective_user.id
     await update.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "           💰 MY WALLET\n"
-        "╚════════════════════════════╝\n\n"
-        f"💵 Balance: ₹{get_balance(user_id):.2f}\n\n"
-        "👇 Select option:",
+        f"💰 WALLET\n\n"
+        f"Balance: ₹{balance(uid):.2f}\n\n"
+        "Neeche option choose karo:",
         reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "➕ Add Money",
-                    callback_data="wallet_add"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🧾 History",
-                    callback_data="wallet_history"
-                )
-            ]
-        ])
+            [InlineKeyboardButton("➕ Add Money", callback_data="wallet_add")],
+            [InlineKeyboardButton("📒 Transactions", callback_data="wallet_tx")],
+        ]),
     )
 
-
 async def wallet_callback(update, context):
-
     q = update.callback_query
-
     await q.answer()
 
     if q.data == "wallet_add":
-
-        # FIX:
-        # callback query mein update.message nahi hota.
-        await add_money(
-            update,
-            context
+        clear_state(context)
+        context.user_data["state"] = "deposit_amount"
+        await q.message.reply_text(
+            "➕ ADD MONEY\n\n"
+            f"UPI ID: `{UPI_ID}`\n\n"
+            "Kitna amount add karna hai? Sirf number bhejo.\n"
+            "Example: 100",
+            parse_mode="Markdown",
         )
 
-    elif q.data == "wallet_history":
-
-        user_id = q.from_user.id
-
+    elif q.data == "wallet_tx":
         con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT amount, note, created
-            FROM transactions
-            WHERE user_id=?
-            ORDER BY id DESC
-            LIMIT 15
-        """, (user_id,))
-
-        rows = cur.fetchall()
-
+        rows = con.execute(
+            """SELECT kind,amount,balance_after,reference,created_at
+               FROM transactions WHERE user_id=?
+               ORDER BY id DESC LIMIT 10""",
+            (q.from_user.id,),
+        ).fetchall()
         con.close()
 
         if not rows:
+            text = "📒 Abhi koi transaction nahi hai."
+        else:
+            lines = ["📒 LAST TRANSACTIONS\n"]
+            for r in rows:
+                sign = "+" if r["amount"] >= 0 else ""
+                lines.append(
+                    f"• {r['kind']}: {sign}₹{r['amount']:.2f}\n"
+                    f"  Balance: ₹{r['balance_after']:.2f}\n"
+                    f"  {fmt_date(r['created_at'])}"
+                )
+            text = "\n".join(lines)
 
-            await q.message.reply_text(
-                "🧾 No transactions yet."
-            )
+        await q.message.reply_text(text)
 
-            return
+async def handle_deposit_amount(update, context):
+    text = update.message.text.strip()
+    try:
+        amount = float(text)
+    except ValueError:
+        await update.message.reply_text("❌ Valid amount bhejo. Example: 100")
+        return
 
-        text = (
-            "╔════════════════════════════╗\n"
-            "       🧾 WALLET HISTORY\n"
-            "╚════════════════════════════╝\n\n"
-        )
+    if amount < 1 or amount > 100000:
+        await update.message.reply_text("❌ Amount ₹1 se ₹100000 ke beech hona chahiye.")
+        return
 
-        for amount, note, created in rows:
+    context.user_data["deposit_amount_value"] = amount
+    context.user_data["state"] = "deposit_utr"
 
-            text += (
-                f"{'➕' if amount >= 0 else '➖'} "
-                f"₹{abs(amount):.2f}\n"
-                f"📌 {note}\n"
-                f"🕐 {created}\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-            )
+    await update.message.reply_text(
+        f"💳 Payment amount: ₹{amount:.2f}\n\n"
+        f"UPI ID: `{UPI_ID}`\n\n"
+        "Payment complete karke UTR/Transaction ID bhejo.\n"
+        "Sirf UTR bhejo.",
+        parse_mode="Markdown",
+    )
 
-        await q.message.reply_text(
-            text
-        )
+async def handle_deposit_utr(update, context):
+    utr = update.message.text.strip()
 
+    if len(utr) < 4 or len(utr) > 100:
+        await update.message.reply_text("❌ Valid UTR/Transaction ID bhejo.")
+        return
+
+    amount = float(context.user_data.get("deposit_amount_value", 0))
+    if amount <= 0:
+        clear_state(context)
+        await update.message.reply_text("Session expired. Dobara Add Money karo.")
+        return
+
+    dep_id = uuid.uuid4().hex[:12]
+
+    con = connect()
+    con.execute(
+        """INSERT INTO deposits
+           (id,user_id,amount,utr,status,created_at)
+           VALUES(?,?,?,?,?,?)""",
+        (dep_id, update.effective_user.id, amount, utr, "Pending", now_text()),
+    )
+    con.commit()
+    con.close()
+
+    clear_state(context)
+
+    await update.message.reply_text(
+        "✅ UTR submit ho gaya.\n\n"
+        f"Amount: ₹{amount:.2f}\n"
+        f"UTR: {utr}\n"
+        "Admin verification ke baad wallet credit hoga.",
+        reply_markup=main_keyboard(),
+    )
+
+    await context.bot.send_message(
+        ADMIN_ID,
+        "💳 NEW UTR\n\n"
+        f"Deposit ID: `{dep_id}`\n"
+        f"User ID: `{update.effective_user.id}`\n"
+        f"Username: @{update.effective_user.username or 'none'}\n"
+        f"Amount: ₹{amount:.2f}\n"
+        f"UTR: `{utr}`",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"dep_ok:{dep_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"dep_no:{dep_id}"),
+            ]
+        ]),
+    )
 
 # =========================================================
-# MY ORDERS
+# LIKE ORDERS - MANUAL APPROVAL / PROCESSING
+# =========================================================
+
+async def buy_like(update, context):
+    clear_state(context)
+
+    if not await channels_joined(context, update.effective_user.id):
+        await join_required(update, context)
+        return
+
+    con = connect()
+    rows = con.execute(
+        "SELECT * FROM plans WHERE active=1 ORDER BY price ASC"
+    ).fetchall()
+    con.close()
+
+    buttons = []
+    for p in rows:
+        buttons.append([
+            InlineKeyboardButton(
+                f"{p['name']} • ₹{p['price']}",
+                callback_data=f"plan:{p['code']}",
+            )
+        ])
+
+    await update.message.reply_text(
+        "🛒 BUY LIKE\n\nPlan select karo.\n"
+        "Orders admin approval ke baad process honge.",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+async def plan_callback(update, context):
+    q = update.callback_query
+    await q.answer()
+
+    code = q.data.split(":", 1)[1]
+    con = connect()
+    p = con.execute(
+        "SELECT * FROM plans WHERE code=? AND active=1",
+        (code,),
+    ).fetchone()
+    con.close()
+
+    if not p:
+        await q.message.reply_text("❌ Plan unavailable.")
+        return
+
+    # Demo: one successful/pending order in the last 24 hours.
+    if code == "demo":
+        con = connect()
+        since = (now() - timedelta(hours=24)).isoformat()
+        row = con.execute(
+            """SELECT id FROM orders
+               WHERE user_id=? AND plan_code='demo'
+               AND created_at>=?
+               AND status NOT IN ('Rejected','Cancelled')""",
+            (q.from_user.id, since),
+        ).fetchone()
+        con.close()
+        if row:
+            await q.message.reply_text("⏳ Demo already used/requested in the last 24 hours.")
+            return
+
+    if balance(q.from_user.id) < float(p["price"]):
+        await q.message.reply_text(
+            f"❌ Wallet balance low.\n\n"
+            f"Required: ₹{p['price']:.2f}\n"
+            f"Balance: ₹{balance(q.from_user.id):.2f}\n\n"
+            "Wallet → Add Money karo."
+        )
+        return
+
+    context.user_data["state"] = "like_uid"
+    context.user_data["plan_code"] = code
+
+    await q.message.reply_text(
+        f"{p['name']}\n\n"
+        f"Daily: {p['daily_likes']}\n"
+        f"Duration: {p['days']} day(s)\n"
+        f"Price: ₹{p['price']:.2f}\n\n"
+        "Free Fire UID bhejo:"
+    )
+
+async def handle_like_uid(update, context):
+    uid = update.message.text.strip()
+
+    if not uid.isdigit() or not (5 <= len(uid) <= 15):
+        await update.message.reply_text("❌ Valid numeric UID bhejo.")
+        return
+
+    code = context.user_data.get("plan_code")
+    if not code:
+        clear_state(context)
+        await update.message.reply_text("Session expired. Buy Like dobara karo.")
+        return
+
+    con = connect()
+    p = con.execute(
+        "SELECT * FROM plans WHERE code=? AND active=1",
+        (code,),
+    ).fetchone()
+    con.close()
+
+    if not p:
+        clear_state(context)
+        await update.message.reply_text("❌ Plan unavailable.")
+        return
+
+    # Reserve the money immediately to prevent spending it twice.
+    ok, new_balance = change_balance(
+        update.effective_user.id,
+        -float(p["price"]),
+        "Like order reserve",
+        "pending-order",
+    )
+    if not ok:
+        clear_state(context)
+        await update.message.reply_text("❌ Wallet balance insufficient.")
+        return
+
+    order_id = "ORD-" + uuid.uuid4().hex[:10].upper()
+
+    con = connect()
+    con.execute(
+        """INSERT INTO orders
+           (id,user_id,plan_code,uid,amount,status,created_at,note)
+           VALUES(?,?,?,?,?,?,?,?)""",
+        (
+            order_id,
+            update.effective_user.id,
+            code,
+            uid,
+            float(p["price"]),
+            "Pending Approval",
+            now_text(),
+            "",
+        ),
+    )
+    con.commit()
+    con.close()
+
+    clear_state(context)
+
+    await update.message.reply_text(
+        "✅ Order submitted.\n\n"
+        f"Order: `{order_id}`\n"
+        f"UID: `{uid}`\n"
+        f"Amount: ₹{p['price']:.2f}\n"
+        "Status: Pending Approval\n\n"
+        "Admin approval ke baad order process hoga.",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
+
+    await context.bot.send_message(
+        ADMIN_ID,
+        "❤️ NEW LIKE ORDER\n\n"
+        f"Order: `{order_id}`\n"
+        f"User ID: `{update.effective_user.id}`\n"
+        f"Username: @{update.effective_user.username or 'none'}\n"
+        f"Plan: {p['name']}\n"
+        f"UID: `{uid}`\n"
+        f"Amount: ₹{p['price']:.2f}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"like_ok:{order_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"like_no:{order_id}"),
+            ]
+        ]),
+    )
+
+async def like_admin_callback(update, context):
+    q = update.callback_query
+    await q.answer()
+
+    if q.from_user.id != ADMIN_ID:
+        return
+
+    action, order_id = q.data.split(":", 1)
+
+    con = connect()
+    row = con.execute(
+        "SELECT * FROM orders WHERE id=?",
+        (order_id,),
+    ).fetchone()
+
+    if not row:
+        con.close()
+        await q.message.reply_text("❌ Order not found.")
+        return
+
+    if row["status"] != "Pending Approval":
+        con.close()
+        await q.message.reply_text(f"ℹ️ Already handled: {row['status']}")
+        return
+
+    if action == "like_ok":
+        approved = now()
+        expires = approved + timedelta(days=1)
+
+        con.execute(
+            """UPDATE orders SET status='Active',
+               approved_at=?,expires_at=? WHERE id=?""",
+            (approved.isoformat(), expires.isoformat(), order_id),
+        )
+        con.commit()
+        con.close()
+
+        await q.message.edit_text(
+            q.message.text + "\n\n✅ APPROVED — Active",
+            reply_markup=None,
+        )
+
+        await context.bot.send_message(
+            row["user_id"],
+            "✅ Order approved!\n\n"
+            f"Order: {order_id}\n"
+            f"UID: {row['uid']}\n"
+            "Status: Active\n\n"
+            "Service processing/fulfilment authorized order ke according hoga.",
+        )
+
+    else:
+        con.execute(
+            "UPDATE orders SET status='Rejected' WHERE id=?",
+            (order_id,),
+        )
+        con.commit()
+        con.close()
+
+        # Refund reserved amount.
+        change_balance(
+            row["user_id"],
+            float(row["amount"]),
+            "Like order refund",
+            order_id,
+        )
+
+        await q.message.edit_text(
+            q.message.text + "\n\n❌ REJECTED — Amount refunded",
+            reply_markup=None,
+        )
+
+        await context.bot.send_message(
+            row["user_id"],
+            "❌ Order rejected.\n\n"
+            f"Order: {order_id}\n"
+            f"Refund: ₹{row['amount']:.2f}\n"
+            "Refund wallet me add kar diya gaya.",
+        )
+
+# =========================================================
+# ORDERS
 # =========================================================
 
 async def my_orders(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
-    user_id = update.effective_user.id
-
+    clear_state(context)
     con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT order_id, uid, plan_id,
-               amount, status,
-               start_time, expiry_time
-        FROM orders
-        WHERE user_id=?
-        ORDER BY created DESC
-        LIMIT 20
-    """, (user_id,))
-
-    rows = cur.fetchall()
-
+    rows = con.execute(
+        """SELECT o.*,p.name,p.days,p.daily_likes
+           FROM orders o LEFT JOIN plans p ON p.code=o.plan_code
+           WHERE o.user_id=? ORDER BY o.created_at DESC LIMIT 15""",
+        (update.effective_user.id,),
+    ).fetchall()
     con.close()
 
     if not rows:
-
         await update.message.reply_text(
-            "📦 No orders yet."
+            "📦 Abhi koi order nahi hai.",
+            reply_markup=main_keyboard(),
         )
-
         return
 
-    text = (
-        "╔════════════════════════════╗\n"
-        "            📦 MY ORDERS\n"
-        "╚════════════════════════════╝\n\n"
-    )
-
-    for (
-        order_id,
-        uid,
-        plan_id,
-        amount,
-        status,
-        start_time,
-        expiry_time
-    ) in rows:
-
-        plan_name = get_plan_name(
-            plan_id
+    lines = ["📦 MY ORDERS\n"]
+    for r in rows:
+        lines.append(
+            f"🆔 {r['id']}\n"
+            f"Plan: {r['name'] or r['plan_code']}\n"
+            f"UID: {r['uid']}\n"
+            f"Amount: ₹{r['amount']:.2f}\n"
+            f"Status: {r['status']}\n"
+            f"Start: {fmt_date(r['approved_at'])}\n"
+            f"Expiry: {fmt_date(r['expires_at'])}\n"
         )
 
-        display_status = status
-
-        if (
-            status == "Active"
-            and expiry_time
-        ):
-
-            try:
-
-                expiry = datetime.strptime(
-                    expiry_time,
-                    "%Y-%m-%d %H:%M:%S"
-                )
-
-                if datetime.now() >= expiry:
-
-                    display_status = "Expired"
-
-                    con2 = connect()
-                    cur2 = con2.cursor()
-
-                    cur2.execute("""
-                        UPDATE orders
-                        SET status='Expired'
-                        WHERE order_id=?
-                    """, (order_id,))
-
-                    con2.commit()
-                    con2.close()
-
-            except Exception:
-                pass
-
-        text += (
-            f"🧾 `{order_id}`\n"
-            f"📦 {plan_name}\n"
-            f"🆔 UID: `{uid}`\n"
-            f"💰 ₹{amount:g}\n"
-            f"📌 {display_status}\n"
-        )
-
-        if start_time:
-            text += (
-                f"🟢 Start: `{start_time}`\n"
-            )
-
-        if expiry_time:
-            text += (
-                f"🔴 Expiry: `{expiry_time}`\n"
-            )
-
-        text += (
-            "━━━━━━━━━━━━━━━━━━━━\n"
-        )
-
-    await update.message.reply_text(
-        text,
-        parse_mode="Markdown"
-    )
-
+    await update.message.reply_text("\n".join(lines), reply_markup=main_keyboard())
 
 # =========================================================
 # REFERRAL
 # =========================================================
 
 async def referral(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
-    user_id = update.effective_user.id
-
-    me = await context.bot.get_me()
-
-    link = (
-        f"https://t.me/{me.username}"
-        f"?start={user_id}"
-    )
+    clear_state(context)
+    uid = update.effective_user.id
+    reward = float(get_setting("referral_reward", "2"))
 
     con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT COUNT(*)
-        FROM users
-        WHERE referred_by=?
-        AND joined_gate=1
-    """, (user_id,))
-
-    refs = cur.fetchone()[0]
-
-    cur.execute("""
-        SELECT COUNT(*)
-        FROM users
-        WHERE referred_by=?
-        AND referral_rewarded=1
-    """, (user_id,))
-
-    rewarded = cur.fetchone()[0]
-
+    rows = con.execute(
+        "SELECT * FROM referrals WHERE referrer_id=? ORDER BY id DESC",
+        (uid,),
+    ).fetchall()
     con.close()
 
-    reward = setting(
-        "referral_reward",
-        "2"
-    )
+    bot_username = (await context.bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start=ref_{uid}"
 
     await update.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "        👥 REFER & EARN\n"
-        "╚════════════════════════════╝\n\n"
-        f"💰 Reward: ₹{reward}\n"
-        f"👥 Verified: {refs}\n"
-        f"🎁 Rewarded: {rewarded}\n\n"
-        "🔗 Your Referral Link:\n"
-        f"`{link}`",
-        parse_mode="Markdown"
+        "🎁 REFERRAL\n\n"
+        f"Your link:\n{link}\n\n"
+        f"Reward: ₹{reward:.2f}\n"
+        f"Total referrals: {len(rows)}\n"
+        f"Verified/Paid: {sum(1 for r in rows if r['status']=='paid')}\n\n"
+        "Referral reward tabhi count hoga jab referred user required channels join kare.",
+        reply_markup=main_keyboard(),
     )
 
+async def process_referral_if_ready(context, referred_id):
+    con = connect()
+    row = con.execute(
+        "SELECT * FROM referrals WHERE referred_id=? AND status='pending'",
+        (referred_id,),
+    ).fetchone()
+    con.close()
+
+    if not row:
+        return False
+
+    if not await channels_joined(context, referred_id):
+        return False
+
+    reward = float(get_setting("referral_reward", "2"))
+
+    con = connect()
+    con.execute(
+        "UPDATE referrals SET status='paid',reward=?,paid_at=? WHERE id=?",
+        (reward, now_text(), row["id"]),
+    )
+    con.commit()
+    con.close()
+
+    ok, _ = change_balance(
+        row["referrer_id"],
+        reward,
+        "Referral reward",
+        f"referral:{referred_id}",
+    )
+    return ok
 
 # =========================================================
 # SUPPORT
 # =========================================================
 
 async def support(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
+    clear_state(context)
     await update.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "             🆘 SUPPORT\n"
-        "╚════════════════════════════╝\n\n"
-        "Payment, wallet ya order issue ke liye "
-        "support contact karo.\n\n"
-        f"👨‍💻 {SUPPORT_USERNAME}",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🆘 CONTACT SUPPORT",
-                    url=(
-                        "https://t.me/"
-                        + SUPPORT_USERNAME.lstrip("@")
-                    )
-                )
-            ]
-        ])
+        f"🛟 SUPPORT\n\nContact: {SUPPORT_USERNAME}",
+        reply_markup=main_keyboard(),
     )
-
 
 # =========================================================
 # CHECK UID
 # =========================================================
 
-async def check_uid(update, context):
+async def check_uid_start(update, context):
+    clear_state(context)
+    context.user_data["state"] = "check_uid"
+    await update.message.reply_text("🆔 Free Fire UID bhejo:")
 
-    if not await is_verified(
-        update,
-        context
-    ):
+async def handle_check_uid(update, context):
+    uid = update.message.text.strip()
+    if not uid.isdigit():
+        await update.message.reply_text("❌ Numeric UID bhejo.")
         return
 
     clear_state(context)
 
-    context.user_data["check_uid"] = True
-
-    await update.message.reply_text(
-        "🔍 **CHECK UID**\n\n"
-        "Game UID bhejo.",
-        parse_mode="Markdown"
-    )
-
-
-def fetch_info(uid):
-
     try:
-
         r = requests.get(
             INFO_API,
             params={"uid": uid},
-            timeout=20
+            timeout=15,
         )
-
         r.raise_for_status()
-
-        return r.json()
-
+        data = r.json()
     except Exception as e:
-
-        return {
-            "error": str(e)
-        }
-
-
-def find_value(data, keywords):
-
-    if isinstance(data, dict):
-
-        for key, value in data.items():
-
-            key_lower = str(key).lower()
-
-            if any(
-                k in key_lower
-                for k in keywords
-            ):
-
-                return value
-
-            result = find_value(
-                value,
-                keywords
-            )
-
-            if result is not None:
-                return result
-
-    elif isinstance(data, list):
-
-        for item in data:
-
-            result = find_value(
-                item,
-                keywords
-            )
-
-            if result is not None:
-                return result
-
-    return None
-
-
-async def check_uid_handler(update, context):
-
-    uid = update.message.text.strip()
-
-    if not uid.isdigit():
-
         await update.message.reply_text(
-            "❌ UID sirf numbers mein bhejo."
+            "❌ UID API abhi available nahi hai. Thodi der baad try karo."
         )
-
         return
 
-    clear_state(context)
-
-    msg = await update.message.reply_text(
-        "⏳ 🔍 UID information fetch ho rahi hai..."
-    )
-
-    data = await asyncio.to_thread(
-        fetch_info,
-        uid
-    )
-
-    if data.get("error"):
-
-        await msg.edit_text(
-            "❌ UID API error.\n\n"
-            + str(data["error"])
-        )
-
+    if not isinstance(data, dict):
+        await update.message.reply_text("❌ Invalid API response.")
         return
 
-    nickname = find_value(
-        data,
-        ["nickname", "player_name"]
-    )
+    # Keep this generic because API response fields can change.
+    name = data.get("name") or data.get("nickname") or data.get("player_name") or "N/A"
+    region = data.get("region") or data.get("server") or "N/A"
+    level = data.get("level") or data.get("player_level") or "N/A"
 
-    level = find_value(
-        data,
-        ["level"]
+    await update.message.reply_text(
+        "🆔 ACCOUNT INFO\n\n"
+        f"UID: {uid}\n"
+        f"Name: {name}\n"
+        f"Region: {region}\n"
+        f"Level: {level}",
+        reply_markup=main_keyboard(),
     )
-
-    likes = find_value(
-        data,
-        ["liked", "likes", "like_count"]
-    )
-
-    region = find_value(
-        data,
-        ["region", "server"]
-    )
-
-    clan = find_value(
-        data,
-        ["clan_name"]
-    )
-
-    # FIX:
-    # 0 likes ko N/A nahi dikhayega.
-    likes_display = (
-        "N/A"
-        if likes is None
-        else str(likes)
-    )
-
-    await msg.edit_text(
-        "╔════════════════════════════╗\n"
-        "            👤 UID INFO\n"
-        "╚════════════════════════════╝\n\n"
-        f"🆔 UID: `{uid}`\n"
-        f"👤 Name: `{nickname or 'N/A'}`\n"
-        f"⭐ Level: `{level or 'N/A'}`\n"
-        f"❤️ Likes: `{likes_display}`\n"
-        f"🌍 Region: `{region or 'N/A'}`\n"
-        f"🏰 Clan: `{clan or 'N/A'}`\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ Information fetched.",
-        parse_mode="Markdown"
-    )
-
 
 # =========================================================
-# CC STORE
+# CC STORE - AUTHORIZED DIGITAL STOCK ONLY
 # =========================================================
 
 async def cc_store(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
-    name = setting(
-        "cc_name",
-        "💎 Premium Digital Store"
-    )
-
-    price = float(
-        setting(
-            "cc_price",
-            "100"
-        )
-    )
-
-    value = setting(
-        "cc_value",
-        "₹3,000"
-    )
-
-    desc = setting(
-        "cc_description",
-        "Premium digital product"
-    )
-
-    await update.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "             🛒 CC STORE\n"
-        "╚════════════════════════════╝\n\n"
-        f"💎 {name}\n\n"
-        f"💰 Price: ₹{price:g}\n"
-        f"💵 Value: {value}\n"
-        "🆔 UID: Not Required\n"
-        "⚡ Delivery: Instant\n"
-        f"📦 Stock: {get_cc_stock()}\n\n"
-        f"📋 {desc}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    f"🛒 BUY NOW • ₹{price:g}",
-                    callback_data="cc_buy"
-                )
-            ]
-        ])
-    )
-
-
-def get_cc_stock():
+    clear_state(context)
+    name = get_setting("cc_name", "Digital Code")
+    price = float(get_setting("cc_price", "100"))
+    value = get_setting("cc_value", "₹3,000 value")
+    desc = get_setting("cc_description", "")
 
     con = connect()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT COUNT(*)
-        FROM cc_items
-        WHERE sold=0
-    """)
-
-    count = cur.fetchone()[0]
-
+    item = con.execute(
+        "SELECT * FROM cc_items WHERE active=1 ORDER BY id LIMIT 1"
+    ).fetchone()
+    stock = con.execute(
+        "SELECT COUNT(*) AS c FROM cc_stock WHERE status='available'"
+    ).fetchone()["c"]
     con.close()
 
-    return count
+    if item:
+        name = item["name"]
+        price = float(item["price"])
+        value = item["value_text"]
+        desc = item["description"]
 
-
-async def cc_buy(update, context):
-
-    q = update.callback_query
-
-    await q.answer()
-
-    user_id = q.from_user.id
-
-    price = float(
-        setting(
-            "cc_price",
-            "100"
-        )
+    await update.message.reply_text(
+        "🏪 CC STORE\n\n"
+        f"📦 {name}\n"
+        f"💰 Price: ₹{price:.2f}\n"
+        f"🎁 Value: {value}\n"
+        f"📦 Stock: {stock}\n\n"
+        f"{desc}\n\n"
+        "⚠️ Only authorized digital codes/items are supported.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒 Buy", callback_data="cc_buy")],
+        ]),
     )
 
-    balance = get_balance(user_id)
-
-    if balance < price:
-
-        await q.message.reply_text(
-            "❌ **LOW BALANCE**\n\n"
-            f"💰 Required: ₹{price:g}\n"
-            f"💵 Balance: ₹{balance:.2f}",
-            parse_mode="Markdown"
-        )
-
-        return
+async def cc_buy(update, context):
+    q = update.callback_query
+    await q.answer()
 
     con = connect()
-    cur = con.cursor()
+    item = con.execute(
+        "SELECT * FROM cc_items WHERE active=1 ORDER BY id LIMIT 1"
+    ).fetchone()
+    stock = con.execute(
+        "SELECT id,code FROM cc_stock WHERE status='available' ORDER BY id LIMIT 1"
+    ).fetchone()
+    con.close()
 
-    cur.execute("""
-        SELECT id, item
-        FROM cc_items
-        WHERE sold=0
-        ORDER BY id ASC
-        LIMIT 1
-    """)
-
-    row = cur.fetchone()
-
-    if not row:
-
-        con.close()
-
-        await q.message.reply_text(
-            "⏳ **OUT OF STOCK**\n\n"
-            "Admin se new stock add karwao.",
-            parse_mode="Markdown"
-        )
-
+    if not item or not stock:
+        await q.message.reply_text("❌ Abhi stock available nahi hai.")
         return
 
-    item_id, item = row
+    price = float(item["price"])
 
-    # First reserve item atomically
-    cur.execute("""
-        UPDATE cc_items
-        SET sold=1, sold_to=?
-        WHERE id=?
-        AND sold=0
-    """, (
-        user_id,
-        item_id
-    ))
+    if balance(q.from_user.id) < price:
+        await q.message.reply_text(
+            f"❌ Balance low.\nRequired: ₹{price:.2f}\n"
+            f"Balance: ₹{balance(q.from_user.id):.2f}"
+        )
+        return
 
-    changed = cur.rowcount
-
-    if changed != 1:
-
+    # Atomic sale.
+    con = connect()
+    con.execute("BEGIN IMMEDIATE")
+    stock2 = con.execute(
+        "SELECT id,code FROM cc_stock WHERE status='available' ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not stock2:
         con.rollback()
         con.close()
-
-        await q.message.reply_text(
-            "⚠️ Item already sold. Dobara try karo."
-        )
-
+        await q.message.reply_text("❌ Stock just sold out.")
         return
 
+    row = con.execute(
+        "SELECT balance FROM users WHERE user_id=?",
+        (q.from_user.id,),
+    ).fetchone()
+    if not row or float(row["balance"]) < price:
+        con.rollback()
+        con.close()
+        await q.message.reply_text("❌ Balance low.")
+        return
+
+    new_balance = float(row["balance"]) - price
+    con.execute(
+        "UPDATE users SET balance=? WHERE user_id=?",
+        (new_balance, q.from_user.id),
+    )
+    con.execute(
+        """INSERT INTO transactions
+           (user_id,kind,amount,balance_after,reference,created_at)
+           VALUES(?,?,?,?,?,?)""",
+        (q.from_user.id, "CC Store purchase", -price, new_balance, "CC", now_text()),
+    )
+    con.execute(
+        """UPDATE cc_stock SET status='sold',sold_to=?,sold_at=?
+           WHERE id=?""",
+        (q.from_user.id, now_text(), stock2["id"]),
+    )
     con.commit()
     con.close()
 
-    # Then charge wallet.
-    if not debit(
-        user_id,
-        price,
-        "CC Store Purchase"
-    ):
+    await q.message.reply_text(
+        "✅ PURCHASE SUCCESS\n\n"
+        f"📦 {item['name']}\n"
+        f"💰 Paid: ₹{price:.2f}\n\n"
+        f"🔑 Code:\n`{stock2['code']}`\n\n"
+        "Save this code securely.",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
 
-        # Payment failed, restore stock
+# =========================================================
+# ADMIN
+# =========================================================
+
+def admin_only(user_id):
+    return user_id == ADMIN_ID
+
+async def admin_cmd(update, context):
+    if not admin_only(update.effective_user.id):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    clear_state(context)
+    await update.message.reply_text("🛠 ADMIN PANEL", reply_markup=admin_keyboard())
+
+async def admin_callback(update, context):
+    q = update.callback_query
+    await q.answer()
+
+    if not admin_only(q.from_user.id):
+        return
+
+    action = q.data
+
+    if action == "adm_dashboard":
         con = connect()
-        cur = con.cursor()
+        users = con.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
+        pending_utr = con.execute(
+            "SELECT COUNT(*) c FROM deposits WHERE status='Pending'"
+        ).fetchone()["c"]
+        pending_likes = con.execute(
+            "SELECT COUNT(*) c FROM orders WHERE status='Pending Approval'"
+        ).fetchone()["c"]
+        total_balance = con.execute(
+            "SELECT COALESCE(SUM(balance),0) s FROM users"
+        ).fetchone()["s"]
+        con.close()
 
-        cur.execute("""
-            UPDATE cc_items
-            SET sold=0, sold_to=NULL
-            WHERE id=?
-        """, (item_id,))
+        await q.message.reply_text(
+            "📊 DASHBOARD\n\n"
+            f"👥 Users: {users}\n"
+            f"💰 User balances: ₹{total_balance:.2f}\n"
+            f"💳 Pending UTR: {pending_utr}\n"
+            f"❤️ Pending Likes: {pending_likes}"
+        )
 
+    elif action == "adm_users":
+        con = connect()
+        rows = con.execute(
+            "SELECT user_id,username,first_name,balance FROM users ORDER BY created_at DESC LIMIT 30"
+        ).fetchall()
+        con.close()
+
+        text = "👥 USERS\n\n"
+        for r in rows:
+            text += (
+                f"{r['user_id']} | @{r['username'] or '-'} | "
+                f"₹{r['balance']:.2f}\n"
+            )
+        await q.message.reply_text(text[:4000] or "No users.")
+
+    elif action == "adm_wallet":
+        context.user_data["state"] = "admin_wallet_lookup"
+        await q.message.reply_text("User Telegram ID bhejo:")
+
+    elif action == "adm_add":
+        context.user_data["state"] = "admin_add_user"
+        await q.message.reply_text("Format: USER_ID AMOUNT\nExample: 123456789 100")
+
+    elif action == "adm_deduct":
+        context.user_data["state"] = "admin_deduct_user"
+        await q.message.reply_text("Format: USER_ID AMOUNT\nExample: 123456789 50")
+
+    elif action == "adm_tx":
+        con = connect()
+        rows = con.execute(
+            """SELECT user_id,kind,amount,balance_after,created_at
+               FROM transactions ORDER BY id DESC LIMIT 30"""
+        ).fetchall()
+        con.close()
+
+        text = "📒 TRANSACTIONS\n\n"
+        for r in rows:
+            text += (
+                f"{r['user_id']} | {r['kind']} | "
+                f"{r['amount']:+.2f} | Bal ₹{r['balance_after']:.2f}\n"
+            )
+        await q.message.reply_text(text[:4000] or "No transactions.")
+
+    elif action == "adm_utr":
+        con = connect()
+        rows = con.execute(
+            """SELECT * FROM deposits
+               WHERE status='Pending' ORDER BY created_at ASC LIMIT 20"""
+        ).fetchall()
+        con.close()
+
+        if not rows:
+            await q.message.reply_text("✅ No pending UTR.")
+            return
+
+        for r in rows:
+            await q.message.reply_text(
+                "💳 PENDING UTR\n\n"
+                f"ID: {r['id']}\n"
+                f"User: {r['user_id']}\n"
+                f"Amount: ₹{r['amount']:.2f}\n"
+                f"UTR: {r['utr']}",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Approve", callback_data=f"dep_ok:{r['id']}"),
+                        InlineKeyboardButton("❌ Reject", callback_data=f"dep_no:{r['id']}"),
+                    ]
+                ]),
+            )
+
+    elif action == "adm_likes":
+        con = connect()
+        rows = con.execute(
+            """SELECT o.*,p.name FROM orders o
+               LEFT JOIN plans p ON p.code=o.plan_code
+               WHERE o.status='Pending Approval'
+               ORDER BY o.created_at ASC LIMIT 20"""
+        ).fetchall()
+        con.close()
+
+        if not rows:
+            await q.message.reply_text("✅ No pending like orders.")
+            return
+
+        for r in rows:
+            await q.message.reply_text(
+                "❤️ PENDING LIKE\n\n"
+                f"Order: {r['id']}\n"
+                f"User: {r['user_id']}\n"
+                f"Plan: {r['name'] or r['plan_code']}\n"
+                f"UID: {r['uid']}\n"
+                f"Amount: ₹{r['amount']:.2f}",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Approve", callback_data=f"like_ok:{r['id']}"),
+                        InlineKeyboardButton("❌ Reject", callback_data=f"like_no:{r['id']}"),
+                    ]
+                ]),
+            )
+
+    elif action == "adm_orders":
+        con = connect()
+        rows = con.execute(
+            "SELECT * FROM orders ORDER BY created_at DESC LIMIT 30"
+        ).fetchall()
+        con.close()
+
+        text = "📦 ALL ORDERS\n\n"
+        for r in rows:
+            text += (
+                f"{r['id']} | U:{r['user_id']} | UID:{r['uid']} | "
+                f"{r['status']} | ₹{r['amount']:.2f}\n"
+            )
+        await q.message.reply_text(text[:4000] or "No orders.")
+
+    elif action == "adm_refs":
+        con = connect()
+        rows = con.execute(
+            "SELECT * FROM referrals ORDER BY id DESC LIMIT 30"
+        ).fetchall()
+        con.close()
+
+        text = "🎁 REFERRALS\n\n"
+        for r in rows:
+            text += (
+                f"Referrer: {r['referrer_id']} → {r['referred_id']} | "
+                f"{r['status']} | ₹{r['reward']:.2f}\n"
+            )
+        await q.message.reply_text(text[:4000] or "No referrals.")
+
+    elif action == "adm_reward":
+        context.user_data["state"] = "admin_reward"
+        await q.message.reply_text(
+            f"Current reward: ₹{float(get_setting('referral_reward','2')):.2f}\n"
+            "New reward amount bhejo:"
+        )
+
+    elif action == "adm_broadcast":
+        context.user_data["state"] = "admin_broadcast"
+        await q.message.reply_text("Broadcast message bhejo:")
+
+    elif action == "adm_cc":
+        name = get_setting("cc_name", "Digital Code")
+        price = get_setting("cc_price", "100")
+        value = get_setting("cc_value", "₹3,000 value")
+        desc = get_setting("cc_description", "")
+        await q.message.reply_text(
+            "🏪 CC STORE SETTINGS\n\n"
+            f"Name: {name}\n"
+            f"Price: ₹{price}\n"
+            f"Value: {value}\n"
+            f"Description: {desc}\n\n"
+            "Edit commands:\n"
+            "/ccname NAME\n"
+            "/ccprice AMOUNT\n"
+            "/ccvalue TEXT\n"
+            "/ccdesc TEXT"
+        )
+
+    elif action == "adm_stock":
+        con = connect()
+        count = con.execute(
+            "SELECT COUNT(*) c FROM cc_stock WHERE status='available'"
+        ).fetchone()["c"]
+        con.close()
+        await q.message.reply_text(
+            f"📦 Available stock: {count}\n\n"
+            "Stock add karne ke liye:\n"
+            "/addstock CODE1\n"
+            "/addstock CODE2"
+        )
+
+# =========================================================
+# ADMIN DEPOSIT CALLBACK
+# =========================================================
+
+async def deposit_admin_callback(update, context):
+    q = update.callback_query
+    await q.answer()
+
+    if not admin_only(q.from_user.id):
+        return
+
+    action, dep_id = q.data.split(":", 1)
+
+    con = connect()
+    row = con.execute(
+        "SELECT * FROM deposits WHERE id=?",
+        (dep_id,),
+    ).fetchone()
+
+    if not row:
+        con.close()
+        await q.message.reply_text("❌ Deposit not found.")
+        return
+
+    if row["status"] != "Pending":
+        con.close()
+        await q.message.reply_text(f"ℹ️ Already handled: {row['status']}")
+        return
+
+    if action == "dep_ok":
+        con.execute(
+            "UPDATE deposits SET status='Approved',reviewed_at=? WHERE id=?",
+            (now_text(), dep_id),
+        )
         con.commit()
         con.close()
 
-        await q.message.reply_text(
-            "❌ Wallet balance change nahi ho saka."
+        ok, new_bal = change_balance(
+            row["user_id"],
+            float(row["amount"]),
+            "UPI deposit",
+            dep_id,
         )
-
-        return
-
-    order_id = (
-        "CC-"
-        + uuid.uuid4().hex[:8].upper()
-    )
-
-    await q.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "       ✅ PURCHASE SUCCESS\n"
-        "╚════════════════════════════╝\n\n"
-        f"🧾 Order: `{order_id}`\n"
-        "📦 Product: CC Store\n"
-        f"💰 Paid: ₹{price:g}\n"
-        "📌 Status: Completed\n\n"
-        "🔐 Authorized digital item:\n"
-        f"`{item}`\n\n"
-        f"💵 Balance: ₹{get_balance(user_id):.2f}",
-        parse_mode="Markdown"
-    )
-
-
-# =========================================================
-# ADMIN PANEL
-# =========================================================
-
-def admin_keyboard():
-
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "📊 Dashboard",
-                callback_data="admin_dashboard"
-            ),
-            InlineKeyboardButton(
-                "👥 Users",
-                callback_data="admin_users"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💰 View Wallet",
-                callback_data="admin_view_wallet"
-            ),
-            InlineKeyboardButton(
-                "➕ Add Balance",
-                callback_data="admin_add_balance"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "➖ Deduct Balance",
-                callback_data="admin_deduct"
-            ),
-            InlineKeyboardButton(
-                "🧾 Transactions",
-                callback_data="admin_transactions"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💳 Pending UTR",
-                callback_data="admin_utr"
-            ),
-            InlineKeyboardButton(
-                "❤️ Pending Likes",
-                callback_data="admin_likes"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📦 All Orders",
-                callback_data="admin_orders"
-            ),
-            InlineKeyboardButton(
-                "👥 Referrals",
-                callback_data="admin_referrals"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🛒 CC Store",
-                callback_data="admin_cc"
-            ),
-            InlineKeyboardButton(
-                "📦 CC Stock",
-                callback_data="admin_cc_stock"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💸 Referral Reward",
-                callback_data="admin_ref_reward"
-            ),
-            InlineKeyboardButton(
-                "📢 Broadcast",
-                callback_data="admin_broadcast"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "❤️ Plan Settings",
-                callback_data="admin_plans"
-            ),
-            InlineKeyboardButton(
-                "⚙️ Settings",
-                callback_data="admin_settings"
-            )
-        ],
-    ])
-
-
-async def admin_panel(update, context):
-
-    if update.effective_user.id != ADMIN_ID:
-
-        await update.message.reply_text(
-            "❌ Admin only."
-        )
-
-        return
-
-    clear_state(context)
-
-    await update.message.reply_text(
-        "╔════════════════════════════╗\n"
-        "          👑 VIP ADMIN PANEL\n"
-        "╚════════════════════════════╝\n\n"
-        "🛠️ Complete management center\n\n"
-        "👇 Option select karo.",
-        reply_markup=admin_keyboard()
-    )
-
-
-# =========================================================
-# ADMIN CALLBACK
-# =========================================================
-
-async def admin_callback(update, context):
-
-    q = update.callback_query
-
-    if q.from_user.id != ADMIN_ID:
-
-        await q.answer(
-            "❌ Admin only.",
-            show_alert=True
-        )
-
-        return
-
-    await q.answer()
-
-    data = q.data
-
-    # Dashboard
-    if data == "admin_dashboard":
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute(
-            "SELECT COUNT(*) FROM users"
-        )
-
-        users = cur.fetchone()[0]
-
-        cur.execute(
-            "SELECT COUNT(*) FROM orders"
-        )
-
-        orders = cur.fetchone()[0]
-
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM orders
-            WHERE status='Pending Approval'
-        """)
-
-        pending_likes = cur.fetchone()[0]
-
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM deposits
-            WHERE status='pending'
-        """)
-
-        pending_utr = cur.fetchone()[0]
-
-        cur.execute("""
-            SELECT COALESCE(SUM(balance),0)
-            FROM users
-        """)
-
-        wallet = cur.fetchone()[0]
-
-        con.close()
-
-        await q.message.reply_text(
-            "📊 **VIP DASHBOARD**\n\n"
-            f"👥 Users: {users}\n"
-            f"📦 Orders: {orders}\n"
-            f"❤️ Pending Likes: {pending_likes}\n"
-            f"💳 Pending UTR: {pending_utr}\n"
-            f"💰 Total Wallet: ₹{wallet:.2f}",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # View wallet
-    if data == "admin_view_wallet":
-
-        clear_state(context)
-
-        context.user_data["admin_wallet"] = True
-
-        await q.message.reply_text(
-            "👤 User Telegram ID bhejo."
-        )
-
-        return
-
-    # Add balance
-    if data == "admin_add_balance":
-
-        clear_state(context)
-
-        context.user_data["admin_add"] = True
-
-        await q.message.reply_text(
-            "💰 Format:\n"
-            "`USER_ID AMOUNT`\n\n"
-            "Example:\n"
-            "`123456789 100`",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # Deduct
-    if data == "admin_deduct":
-
-        clear_state(context)
-
-        context.user_data["admin_deduct"] = True
-
-        await q.message.reply_text(
-            "➖ Format:\n"
-            "`USER_ID AMOUNT`",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # Transactions
-    if data == "admin_transactions":
-
-        clear_state(context)
-
-        context.user_data["admin_tx"] = True
-
-        await q.message.reply_text(
-            "User ID bhejo."
-        )
-
-        return
-
-    # Users
-    if data == "admin_users":
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT user_id, username,
-                   balance, created
-            FROM users
-            ORDER BY created DESC
-            LIMIT 20
-        """)
-
-        rows = cur.fetchall()
-
-        con.close()
-
-        text = "👥 **RECENT USERS**\n\n"
-
-        for uid, username, bal, created in rows:
-
-            text += (
-                f"🆔 `{uid}`\n"
-                f"👤 @{username or 'N/A'}\n"
-                f"💰 ₹{bal:.2f}\n"
-                f"🕐 {created}\n"
-                "━━━━━━━━━━━━\n"
-            )
-
-        await q.message.reply_text(
-            text,
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # Pending UTR
-    if data == "admin_utr":
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT deposit_id, user_id,
-                   amount, utr, created
-            FROM deposits
-            WHERE status='pending'
-            ORDER BY created
-            LIMIT 20
-        """)
-
-        rows = cur.fetchall()
-
-        con.close()
-
-        if not rows:
-
-            await q.message.reply_text(
-                "✅ No pending UTR."
-            )
-
+        if not ok:
+            await q.message.reply_text("❌ Wallet credit failed.")
             return
 
-        for deposit_id, uid, amount, utr, created in rows:
+        await q.message.edit_text(
+            q.message.text + f"\n\n✅ APPROVED\nNew balance: ₹{new_bal:.2f}",
+            reply_markup=None,
+        )
+        await context.bot.send_message(
+            row["user_id"],
+            f"✅ Deposit approved!\n\n"
+            f"Amount: ₹{row['amount']:.2f}\n"
+            f"New wallet balance: ₹{new_bal:.2f}",
+        )
 
-            await q.message.reply_text(
-                "💳 **PENDING UTR**\n\n"
-                f"🧾 `{deposit_id}`\n"
-                f"👤 `{uid}`\n"
-                f"💰 ₹{amount:.2f}\n"
-                f"🔢 `{utr}`\n"
-                f"🕐 {created}",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "✅ APPROVE",
-                            callback_data=f"depositapprove:{deposit_id}"
-                        ),
-                        InlineKeyboardButton(
-                            "❌ REJECT",
-                            callback_data=f"depositreject:{deposit_id}"
-                        )
-                    ]
-                ])
-            )
-
-        return
-
-    # Pending Likes
-    if data == "admin_likes":
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT order_id, user_id,
-                   uid, plan_id, amount
-            FROM orders
-            WHERE status='Pending Approval'
-            ORDER BY created
-            LIMIT 20
-        """)
-
-        rows = cur.fetchall()
-
+    else:
+        con.execute(
+            "UPDATE deposits SET status='Rejected',reviewed_at=? WHERE id=?",
+            (now_text(), dep_id),
+        )
+        con.commit()
         con.close()
 
-        if not rows:
-
-            await q.message.reply_text(
-                "✅ No pending Like plans."
-            )
-
-            return
-
-        for (
-            order_id,
-            uid_user,
-            game_uid,
-            plan_id,
-            amount
-        ) in rows:
-
-            await q.message.reply_text(
-                "❤️ **PENDING LIKE PLAN**\n\n"
-                f"🧾 `{order_id}`\n"
-                f"👤 `{uid_user}`\n"
-                f"🆔 `{game_uid}`\n"
-                f"📦 {get_plan_name(plan_id)}\n"
-                f"💰 ₹{amount:g}",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "✅ APPROVE",
-                            callback_data=f"likeapprove:{order_id}"
-                        ),
-                        InlineKeyboardButton(
-                            "❌ REJECT",
-                            callback_data=f"likereject:{order_id}"
-                        )
-                    ]
-                ])
-            )
-
-        return
-
-    # Orders
-    if data == "admin_orders":
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT order_id, user_id,
-                   uid, plan_id,
-                   amount, status,
-                   expiry_time
-            FROM orders
-            ORDER BY created DESC
-            LIMIT 20
-        """)
-
-        rows = cur.fetchall()
-
-        con.close()
-
-        if not rows:
-
-            await q.message.reply_text(
-                "📦 No orders."
-            )
-
-            return
-
-        text = "📦 **RECENT ORDERS**\n\n"
-
-        for (
-            order_id,
-            uid_user,
-            game_uid,
-            plan_id,
-            amount,
-            status,
-            expiry
-        ) in rows:
-
-            text += (
-                f"🧾 `{order_id}`\n"
-                f"👤 `{uid_user}`\n"
-                f"🆔 `{game_uid}`\n"
-                f"📦 {get_plan_name(plan_id)}\n"
-                f"💰 ₹{amount:g}\n"
-                f"📌 {status}\n"
-            )
-
-            if expiry:
-                text += (
-                    f"🔴 {expiry}\n"
-                )
-
-            text += "━━━━━━━━━━━━\n"
-
-        await q.message.reply_text(
-            text,
-            parse_mode="Markdown"
+        await q.message.edit_text(
+            q.message.text + "\n\n❌ REJECTED",
+            reply_markup=None,
         )
-
-        return
-
-    # Referral stats
-    if data == "admin_referrals":
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM users
-            WHERE referred_by IS NOT NULL
-        """)
-
-        total = cur.fetchone()[0]
-
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM users
-            WHERE referral_rewarded=1
-        """)
-
-        rewarded = cur.fetchone()[0]
-
-        con.close()
-
-        await q.message.reply_text(
-            "👥 **REFERRAL STATS**\n\n"
-            f"👥 Total: {total}\n"
-            f"🎁 Rewarded: {rewarded}\n"
-            f"💰 Current Reward: ₹{setting('referral_reward','2')}",
-            parse_mode="Markdown"
+        await context.bot.send_message(
+            row["user_id"],
+            f"❌ Deposit rejected.\n\nAmount: ₹{row['amount']:.2f}\nUTR: {row['utr']}",
         )
-
-        return
-
-    # Referral reward
-    if data == "admin_ref_reward":
-
-        clear_state(context)
-
-        context.user_data["admin_ref_reward"] = True
-
-        await q.message.reply_text(
-            "💸 New referral reward amount bhejo.\n"
-            "Example: `5`"
-        )
-
-        return
-
-    # Broadcast
-    if data == "admin_broadcast":
-
-        clear_state(context)
-
-        context.user_data["admin_broadcast"] = True
-
-        await q.message.reply_text(
-            "📢 Broadcast message bhejo.\n\n"
-            "Text/photo/video bhej sakte ho.\n"
-            "/cancel se cancel."
-        )
-
-        return
-
-    # CC settings
-    if data == "admin_cc":
-
-        await q.message.reply_text(
-            "🛒 **CC STORE SETTINGS**\n\n"
-            f"💎 Name: {setting('cc_name')}\n"
-            f"💰 Price: ₹{setting('cc_price')}\n"
-            f"💵 Value: {setting('cc_value')}\n"
-            f"📦 Stock: {get_cc_stock()}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "✏️ Name",
-                        callback_data="cc_edit_name"
-                    ),
-                    InlineKeyboardButton(
-                        "💰 Price",
-                        callback_data="cc_edit_price"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "💵 Value",
-                        callback_data="cc_edit_value"
-                    ),
-                    InlineKeyboardButton(
-                        "📋 Description",
-                        callback_data="cc_edit_desc"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "➕ Add Stock",
-                        callback_data="cc_add_stock"
-                    )
-                ]
-            ])
-        )
-
-        return
-
-    # CC stock
-    if data == "admin_cc_stock":
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT id, item
-            FROM cc_items
-            WHERE sold=0
-            ORDER BY id DESC
-            LIMIT 20
-        """)
-
-        rows = cur.fetchall()
-
-        con.close()
-
-        text = (
-            "📦 **CC STOCK**\n\n"
-            f"Available: {len(rows)}\n\n"
-        )
-
-        for item_id, item in rows:
-
-            text += (
-                f"#{item_id} • `{item}`\n"
-            )
-
-        await q.message.reply_text(
-            text,
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # Plans
-    if data == "admin_plans":
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT plan_id, name,
-                   days, daily, price,
-                   active
-            FROM plans
-            ORDER BY price
-        """)
-
-        rows = cur.fetchall()
-
-        con.close()
-
-        text = "❤️ **LIKE PLANS**\n\n"
-
-        for (
-            pid,
-            name,
-            days,
-            daily,
-            price,
-            active
-        ) in rows:
-
-            text += (
-                f"💎 {name}\n"
-                f"ID: `{pid}`\n"
-                f"❤️ {daily}/day\n"
-                f"📅 {days} day(s)\n"
-                f"💰 ₹{price:g}\n"
-                f"📌 {'ON' if active else 'OFF'}\n"
-                "━━━━━━━━━━━━\n"
-            )
-
-        await q.message.reply_text(
-            text,
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # Settings
-    if data == "admin_settings":
-
-        await q.message.reply_text(
-            "⚙️ **BOT SETTINGS**\n\n"
-            f"🆔 Admin: `{ADMIN_ID}`\n"
-            f"💳 UPI: `{UPI_ID}`\n"
-            f"🎁 Referral: ₹{setting('referral_reward','2')}\n"
-            f"📢 Channels: {len(REQUIRED_CHANNELS)}",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # CC edits
-    cc_states = {
-        "cc_edit_name": "cc_name",
-        "cc_edit_price": "cc_price",
-        "cc_edit_value": "cc_value",
-        "cc_edit_desc": "cc_description",
-        "cc_add_stock": "cc_stock",
-    }
-
-    if data in cc_states:
-
-        clear_state(context)
-
-        state = cc_states[data]
-
-        context.user_data[state] = True
-
-        prompts = {
-            "cc_name":
-                "💎 New CC Store name bhejo.",
-            "cc_price":
-                "💰 New price bhejo.",
-            "cc_value":
-                "💵 New value bhejo.",
-            "cc_description":
-                "📋 New description bhejo.",
-            "cc_stock":
-                "➕ Authorized digital item/code bhejo."
-        }
-
-        await q.message.reply_text(
-            prompts[state]
-        )
-
-        return
-
 
 # =========================================================
-# ADMIN TEXT
+# ADMIN TEXT ACTIONS
 # =========================================================
 
-async def admin_text(update, context):
+async def admin_text_state(update, context):
+    state = context.user_data.get("state")
+    if not admin_only(update.effective_user.id) or not state:
+        return False
 
     text = update.message.text.strip()
 
-    # View wallet
-    if context.user_data.get("admin_wallet"):
-
-        clear_state(context)
-
+    if state == "admin_wallet_lookup":
         if not text.isdigit():
-
-            await update.message.reply_text(
-                "❌ Numeric User ID required."
-            )
-
-            return
-
+            await update.message.reply_text("❌ Numeric user ID bhejo.")
+            return True
         uid = int(text)
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT username, balance, created
-            FROM users
-            WHERE user_id=?
-        """, (uid,))
-
-        row = cur.fetchone()
-
-        con.close()
-
-        if not row:
-
-            await update.message.reply_text(
-                "❌ User not found."
-            )
-
-            return
-
-        username, bal, created = row
-
-        await update.message.reply_text(
-            "👤 **USER WALLET**\n\n"
-            f"🆔 `{uid}`\n"
-            f"👤 @{username or 'N/A'}\n"
-            f"💰 ₹{bal:.2f}\n"
-            f"🕐 {created}",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # Add balance
-    if context.user_data.get("admin_add"):
-
+        await admin_wallet_lookup(update, uid)
         clear_state(context)
+        return True
 
+    if state in ("admin_add_user", "admin_deduct_user"):
         parts = text.split()
-
         if len(parts) != 2:
-
-            await update.message.reply_text(
-                "`USER_ID AMOUNT`",
-                parse_mode="Markdown"
-            )
-
-            return
-
+            await update.message.reply_text("❌ Format: USER_ID AMOUNT")
+            return True
         try:
-
             uid = int(parts[0])
             amount = float(parts[1])
-
         except ValueError:
-
-            await update.message.reply_text(
-                "❌ Invalid."
-            )
-
-            return
+            await update.message.reply_text("❌ Invalid values.")
+            return True
 
         if amount <= 0:
+            await update.message.reply_text("❌ Amount > 0 hona chahiye.")
+            return True
 
-            await update.message.reply_text(
-                "❌ Amount must be greater than 0."
-            )
+        if state == "admin_deduct_user":
+            amount = -amount
 
-            return
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute(
-            "SELECT user_id FROM users WHERE user_id=?",
-            (uid,)
-        )
-
-        exists = cur.fetchone()
-
-        con.close()
-
-        if not exists:
-
-            await update.message.reply_text(
-                "❌ User not found."
-            )
-
-            return
-
-        credit(
+        ok, new_bal = change_balance(
             uid,
             amount,
-            "Admin wallet credit"
+            "Admin balance",
+            f"admin:{update.effective_user.id}",
         )
-
-        new_bal = get_balance(uid)
-
-        await update.message.reply_text(
-            "✅ **BALANCE ADDED**\n\n"
-            f"👤 `{uid}`\n"
-            f"➕ ₹{amount:.2f}\n"
-            f"💰 ₹{new_bal:.2f}",
-            parse_mode="Markdown"
-        )
-
-        try:
-
-            await context.bot.send_message(
-                uid,
-                "💰 **WALLET CREDITED**\n\n"
-                f"➕ ₹{amount:.2f}\n"
-                f"💵 Balance: ₹{new_bal:.2f}",
-                parse_mode="Markdown"
-            )
-
-        except Exception:
-            pass
-
-        return
-
-    # Deduct
-    if context.user_data.get("admin_deduct"):
-
         clear_state(context)
 
-        parts = text.split()
-
-        if len(parts) != 2:
-
+        if not ok:
+            await update.message.reply_text("❌ User nahi mila ya balance insufficient.")
+        else:
             await update.message.reply_text(
-                "`USER_ID AMOUNT`",
-                parse_mode="Markdown"
+                f"✅ Done.\nUser: {uid}\nNew balance: ₹{new_bal:.2f}"
             )
+        return True
 
-            return
-
+    if state == "admin_reward":
         try:
-
-            uid = int(parts[0])
-            amount = float(parts[1])
-
-        except ValueError:
-
-            await update.message.reply_text(
-                "❌ Invalid."
-            )
-
-            return
-
-        if amount <= 0:
-
-            await update.message.reply_text(
-                "❌ Amount must be greater than 0."
-            )
-
-            return
-
-        if get_balance(uid) < amount:
-
-            await update.message.reply_text(
-                "❌ User balance insufficient."
-            )
-
-            return
-
-        if not debit(
-            uid,
-            amount,
-            "Admin wallet deduction"
-        ):
-
-            await update.message.reply_text(
-                "❌ Deduction failed."
-            )
-
-            return
-
-        await update.message.reply_text(
-            "✅ Deducted.\n\n"
-            f"👤 `{uid}`\n"
-            f"➖ ₹{amount:.2f}\n"
-            f"💰 ₹{get_balance(uid):.2f}",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # Transactions
-    if context.user_data.get("admin_tx"):
-
-        clear_state(context)
-
-        if not text.isdigit():
-            return
-
-        uid = int(text)
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT amount, note, created
-            FROM transactions
-            WHERE user_id=?
-            ORDER BY id DESC
-            LIMIT 20
-        """, (uid,))
-
-        rows = cur.fetchall()
-
-        con.close()
-
-        if not rows:
-
-            await update.message.reply_text(
-                "🧾 No transactions."
-            )
-
-            return
-
-        result = (
-            f"🧾 **USER TRANSACTIONS**\n\n"
-        )
-
-        for amount, note, created in rows:
-
-            result += (
-                f"{'➕' if amount >= 0 else '➖'} "
-                f"₹{abs(amount):.2f}\n"
-                f"📌 {note}\n"
-                f"🕐 {created}\n"
-                "━━━━━━━━━━━━\n"
-            )
-
-        await update.message.reply_text(
-            result,
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # Referral reward
-    if context.user_data.get(
-        "admin_ref_reward"
-    ):
-
-        clear_state(context)
-
-        try:
-
             reward = float(text)
-
         except ValueError:
-
-            await update.message.reply_text(
-                "❌ Invalid amount."
-            )
-
-            return
-
-        if reward < 0:
-
-            await update.message.reply_text(
-                "❌ Reward cannot be negative."
-            )
-
-            return
-
-        set_setting(
-            "referral_reward",
-            reward
-        )
-
-        await update.message.reply_text(
-            f"✅ Referral reward updated to ₹{reward:g}"
-        )
-
-        return
-
-    # Broadcast
-    if context.user_data.get(
-        "admin_broadcast"
-    ):
-
+            await update.message.reply_text("❌ Number bhejo.")
+            return True
+        if reward < 0 or reward > 10000:
+            await update.message.reply_text("❌ Invalid reward.")
+            return True
+        set_setting("referral_reward", reward)
         clear_state(context)
+        await update.message.reply_text(f"✅ Referral reward set: ₹{reward:.2f}")
+        return True
 
+    if state == "admin_broadcast":
+        clear_state(context)
         con = connect()
-        cur = con.cursor()
-
-        cur.execute(
-            "SELECT user_id FROM users"
-        )
-
-        users = [
-            x[0]
-            for x in cur.fetchall()
-        ]
-
+        users = con.execute("SELECT user_id FROM users").fetchall()
         con.close()
 
         sent = 0
         failed = 0
-
-        await update.message.reply_text(
-            f"📢 Broadcast starting...\n"
-            f"👥 Users: {len(users)}"
-        )
-
-        for uid in users:
-
+        for row in users:
             try:
-
-                await update.message.copy(
-                    chat_id=uid
-                )
-
+                await context.bot.send_message(row["user_id"], text)
                 sent += 1
-
-                await asyncio.sleep(
-                    0.05
-                )
-
-            except (
-                Forbidden,
-                BadRequest
-            ):
-
+            except (Forbidden, BadRequest):
                 failed += 1
-
             except Exception:
-
                 failed += 1
 
         await update.message.reply_text(
-            "📢 **BROADCAST COMPLETE**\n\n"
-            f"✅ Sent: {sent}\n"
-            f"❌ Failed: {failed}",
-            parse_mode="Markdown"
+            f"📢 Broadcast finished.\nSent: {sent}\nFailed: {failed}"
         )
+        return True
 
+    return False
+
+async def admin_wallet_lookup(update, uid):
+    con = connect()
+    user = con.execute(
+        "SELECT * FROM users WHERE user_id=?",
+        (uid,),
+    ).fetchone()
+    tx = con.execute(
+        """SELECT kind,amount,balance_after,created_at
+           FROM transactions WHERE user_id=? ORDER BY id DESC LIMIT 10""",
+        (uid,),
+    ).fetchall()
+    con.close()
+
+    if not user:
+        await update.message.reply_text("❌ User not found.")
         return
 
-    # CC name
-    if context.user_data.get("cc_name"):
+    text = (
+        "💰 USER WALLET\n\n"
+        f"User ID: {uid}\n"
+        f"Username: @{user['username'] or '-'}\n"
+        f"Balance: ₹{user['balance']:.2f}\n\n"
+        "Transactions:\n"
+    )
+    for r in tx:
+        text += f"{r['kind']} {r['amount']:+.2f} | {fmt_date(r['created_at'])}\n"
 
-        clear_state(context)
-
-        set_setting(
-            "cc_name",
-            text
-        )
-
-        await update.message.reply_text(
-            "✅ CC Store name updated."
-        )
-
-        return
-
-    # CC price
-    if context.user_data.get("cc_price"):
-
-        clear_state(context)
-
-        try:
-
-            price = float(text)
-
-        except ValueError:
-
-            await update.message.reply_text(
-                "❌ Invalid price."
-            )
-
-            return
-
-        if price <= 0:
-
-            await update.message.reply_text(
-                "❌ Price must be greater than 0."
-            )
-
-            return
-
-        set_setting(
-            "cc_price",
-            price
-        )
-
-        await update.message.reply_text(
-            f"✅ CC price: ₹{price:g}"
-        )
-
-        return
-
-    # CC value
-    if context.user_data.get("cc_value"):
-
-        clear_state(context)
-
-        set_setting(
-            "cc_value",
-            text
-        )
-
-        await update.message.reply_text(
-            "✅ CC value updated."
-        )
-
-        return
-
-    # CC description
-    if context.user_data.get(
-        "cc_description"
-    ):
-
-        clear_state(context)
-
-        set_setting(
-            "cc_description",
-            text
-        )
-
-        await update.message.reply_text(
-            "✅ CC description updated."
-        )
-
-        return
-
-    # CC stock
-    if context.user_data.get("cc_stock"):
-
-        clear_state(context)
-
-        con = connect()
-        cur = con.cursor()
-
-        cur.execute("""
-            INSERT OR IGNORE INTO cc_items(item)
-            VALUES(?)
-        """, (text,))
-
-        con.commit()
-        con.close()
-
-        await update.message.reply_text(
-            "✅ Authorized digital stock added.\n"
-            f"📦 Stock: {get_cc_stock()}"
-        )
-
-        return
-
+    await update.message.reply_text(text[:4000])
 
 # =========================================================
-# GENERAL TEXT ROUTER
+# ADMIN COMMANDS FOR CC
+# =========================================================
+
+async def ccname_cmd(update, context):
+    if not admin_only(update.effective_user.id):
+        return
+    value = update.message.text.partition(" ")[2].strip()
+    if not value:
+        await update.message.reply_text("Usage: /ccname NAME")
+        return
+    set_setting("cc_name", value)
+    await update.message.reply_text("✅ CC name updated.")
+
+async def ccprice_cmd(update, context):
+    if not admin_only(update.effective_user.id):
+        return
+    value = update.message.text.partition(" ")[2].strip()
+    try:
+        price = float(value)
+    except ValueError:
+        await update.message.reply_text("Usage: /ccprice 100")
+        return
+    if price <= 0:
+        await update.message.reply_text("❌ Invalid price.")
+        return
+    set_setting("cc_price", price)
+    await update.message.reply_text("✅ CC price updated.")
+
+async def ccvalue_cmd(update, context):
+    if not admin_only(update.effective_user.id):
+        return
+    value = update.message.text.partition(" ")[2].strip()
+    if not value:
+        await update.message.reply_text("Usage: /ccvalue TEXT")
+        return
+    set_setting("cc_value", value)
+    await update.message.reply_text("✅ CC value updated.")
+
+async def ccdesc_cmd(update, context):
+    if not admin_only(update.effective_user.id):
+        return
+    value = update.message.text.partition(" ")[2].strip()
+    if not value:
+        await update.message.reply_text("Usage: /ccdesc TEXT")
+        return
+    set_setting("cc_description", value)
+    await update.message.reply_text("✅ CC description updated.")
+
+async def addstock_cmd(update, context):
+    if not admin_only(update.effective_user.id):
+        return
+
+    code = update.message.text.partition(" ")[2].strip()
+    if not code:
+        await update.message.reply_text("Usage: /addstock CODE")
+        return
+
+    con = connect()
+    try:
+        con.execute(
+            "INSERT INTO cc_stock(item_id,code,status) VALUES(1,?,'available')",
+            (code,),
+        )
+        con.commit()
+        await update.message.reply_text("✅ Stock added.")
+    except sqlite3.IntegrityError:
+        await update.message.reply_text("❌ This code already exists.")
+    finally:
+        con.close()
+
+# =========================================================
+# ROUTER
 # =========================================================
 
 async def text_router(update, context):
-
-    user = update.effective_user
-
-    create_user(
-        user.id,
-        user.username or ""
-    )
-
-    # Admin states
-    if user.id == ADMIN_ID:
-
-        admin_states = [
-            "admin_wallet",
-            "admin_add",
-            "admin_deduct",
-            "admin_tx",
-            "admin_ref_reward",
-            "admin_broadcast",
-            "cc_name",
-            "cc_price",
-            "cc_value",
-            "cc_description",
-            "cc_stock",
-        ]
-
-        if any(
-            context.user_data.get(x)
-            for x in admin_states
-        ):
-
-            await admin_text(
-                update,
-                context
-            )
-
-            return
-
-    # Like UID
-    if context.user_data.get(
-        "waiting_like_uid"
-    ):
-
-        if not await is_verified(
-            update,
-            context
-        ):
-            return
-
-        await like_uid_handler(
-            update,
-            context
-        )
-
+    if not update.message or not update.effective_user:
         return
 
-    # Deposit amount
-    if context.user_data.get(
-        "deposit_amount"
-    ):
+    ensure_user(update.effective_user)
 
-        if not await is_verified(
-            update,
-            context
-        ):
-            return
+    if await process_referral_if_ready(context, update.effective_user.id):
+        pass
 
-        await deposit_amount_handler(
-            update,
-            context
-        )
-
+    if await admin_text_state(update, context):
         return
 
-    # UTR
-    if context.user_data.get(
-        "waiting_utr"
-    ):
+    state = context.user_data.get("state")
 
-        if not await is_verified(
-            update,
-            context
-        ):
-            return
-
-        await utr_handler(
-            update,
-            context
-        )
-
+    if state == "deposit_amount":
+        await handle_deposit_amount(update, context)
         return
 
-    # Check UID
-    if context.user_data.get(
-        "check_uid"
-    ):
-
-        if not await is_verified(
-            update,
-            context
-        ):
-            return
-
-        await check_uid_handler(
-            update,
-            context
-        )
-
+    if state == "deposit_utr":
+        await handle_deposit_utr(update, context)
         return
 
-    text = update.message.text
+    if state == "like_uid":
+        await handle_like_uid(update, context)
+        return
 
-    if text == "❤️ Buy Like":
+    if state == "check_uid":
+        await handle_check_uid(update, context)
+        return
 
-        await buy_like(
-            update,
-            context
-        )
+    text = update.message.text.strip()
 
-    elif text == "🛒 CC Store":
-
-        await cc_store(
-            update,
-            context
-        )
-
-    elif text == "🔍 Check UID":
-
-        await check_uid(
-            update,
-            context
-        )
-
-    elif text == "💰 Wallet":
-
-        await wallet(
-            update,
-            context
-        )
-
-    elif text == "👥 Refer & Earn":
-
-        await referral(
-            update,
-            context
-        )
-
-    elif text == "➕ Add Money":
-
-        await add_money(
-            update,
-            context
-        )
-
+    if text == "💰 Wallet":
+        await wallet(update, context)
+    elif text == "🛒 Buy Like":
+        await buy_like(update, context)
     elif text == "📦 My Orders":
-
-        await my_orders(
-            update,
-            context
-        )
-
-    elif text == "🆘 Support":
-
-        await support(
-            update,
-            context
-        )
-
+        await my_orders(update, context)
+    elif text == "🎁 Referral":
+        await referral(update, context)
+    elif text == "🏪 CC Store":
+        await cc_store(update, context)
+    elif text == "🆔 Check UID":
+        await check_uid_start(update, context)
+    elif text == "🛟 Support":
+        await support(update, context)
     else:
-
-        if not await is_verified(
-            update,
-            context
-        ):
-            return
-
         await update.message.reply_text(
-            "👑 Menu se option select karo.",
-            reply_markup=main_keyboard()
+            "Menu se option choose karo.",
+            reply_markup=main_keyboard(),
         )
-
 
 # =========================================================
 # CALLBACK ROUTER
 # =========================================================
 
 async def callback_router(update, context):
-
-    data = update.callback_query.data
+    q = update.callback_query
+    data = q.data or ""
 
     if data == "check_join":
-
-        q = update.callback_query
-
+        await check_join(update, context)
+    elif data.startswith("wallet_"):
+        await wallet_callback(update, context)
+    elif data.startswith("plan:"):
+        await plan_callback(update, context)
+    elif data.startswith("like_ok:") or data.startswith("like_no:"):
+        await like_admin_callback(update, context)
+    elif data.startswith("dep_ok:") or data.startswith("dep_no:"):
+        await deposit_admin_callback(update, context)
+    elif data == "cc_buy":
+        await cc_buy(update, context)
+    elif data.startswith("adm_"):
+        await admin_callback(update, context)
+    else:
         await q.answer()
 
-        if await is_verified(
-            update,
-            context
-        ):
-
-            await q.message.reply_text(
-                "╔════════════════════════════╗\n"
-                "       ✅ ACCESS VERIFIED\n"
-                "╚════════════════════════════╝\n\n"
-                "🎉 VIP access unlocked.",
-                reply_markup=main_keyboard()
-            )
-
-        return
-
-    if data.startswith("likeplan:"):
-
-        if not await is_verified(
-            update,
-            context
-        ):
-            return
-
-        await like_plan_callback(
-            update,
-            context
-        )
-
-        return
-
-    if (
-        data.startswith("likeapprove:")
-        or data.startswith("likereject:")
-    ):
-
-        await like_approval(
-            update,
-            context
-        )
-
-        return
-
-    if (
-        data.startswith("depositapprove:")
-        or data.startswith("depositreject:")
-    ):
-
-        await deposit_action(
-            update,
-            context
-        )
-
-        return
-
-    if data == "cc_buy":
-
-        if not await is_verified(
-            update,
-            context
-        ):
-            return
-
-        await cc_buy(
-            update,
-            context
-        )
-
-        return
-
-    if data.startswith("wallet_"):
-
-        if not await is_verified(
-            update,
-            context
-        ):
-            return
-
-        await wallet_callback(
-            update,
-            context
-        )
-
-        return
-
-    if (
-        data.startswith("admin_")
-        or data.startswith("cc_")
-    ):
-
-        await admin_callback(
-            update,
-            context
-        )
-
-        return
-
-
 # =========================================================
-# CANCEL
+# COMMANDS
 # =========================================================
 
 async def cancel(update, context):
-
     clear_state(context)
-
     await update.message.reply_text(
-        "❌ Current action cancelled.",
-        reply_markup=main_keyboard()
+        "❌ Cancelled.",
+        reply_markup=main_keyboard(),
     )
-
-
-# =========================================================
-# EXTRA API COMMANDS
-# =========================================================
-
-async def acc(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "/acc UID"
-        )
-
-        return
-
-    uid = context.args[0]
-
-    data = await asyncio.to_thread(
-        fetch_info,
-        uid
-    )
-
-    nickname = find_value(
-        data,
-        ["nickname"]
-    )
-
-    likes = find_value(
-        data,
-        ["liked", "likes"]
-    )
-
-    likes_display = (
-        "N/A"
-        if likes is None
-        else str(likes)
-    )
-
-    await update.message.reply_text(
-        f"👤 Name: `{nickname or 'N/A'}`\n"
-        f"❤️ Likes: `{likes_display}`",
-        parse_mode="Markdown"
-    )
-
-
-async def ban(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "/ban UID"
-        )
-
-        return
-
-    uid = context.args[0]
-
-    try:
-
-        r = await asyncio.to_thread(
-            requests.get,
-            BAN_API,
-            params={"uid": uid},
-            timeout=20
-        )
-
-        await update.message.reply_text(
-            r.text[:4000]
-        )
-
-    except Exception as e:
-
-        await update.message.reply_text(
-            f"❌ API Error: {e}"
-        )
-
-
-async def icon(update, context):
-
-    if not await is_verified(
-        update,
-        context
-    ):
-        return
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "/icon ICON_ID"
-        )
-
-        return
-
-    icon_id = context.args[0]
-
-    await update.message.reply_photo(
-        photo=f"{ICON_API}?icon_id={icon_id}"
-    )
-
-
-# =========================================================
-# ERROR HANDLER
-# =========================================================
-
-async def error_handler(update, context):
-
-    error = context.error
-
-    if isinstance(error, Forbidden):
-
-        print(
-            "Telegram Forbidden: user blocked the bot "
-            "or chat is unavailable."
-        )
-
-        return
-
-    if isinstance(error, BadRequest):
-
-        print(
-            "Telegram BadRequest:",
-            error
-        )
-
-        return
-
-    print(
-        "Unhandled error:",
-        repr(error)
-    )
-
 
 # =========================================================
 # MAIN
 # =========================================================
 
 def main():
-
     init_db()
 
-    if not BOT_TOKEN:
+    threading.Thread(target=run_web, daemon=True).start()
 
-        print(
-            "❌ BOT_TOKEN environment variable set karo."
-        )
+    app = Application.builder().token(BOT_TOKEN).build()
 
-        return
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("acc", check_uid_start))
+    app.add_handler(CommandHandler("ccname", ccname_cmd))
+    app.add_handler(CommandHandler("ccprice", ccprice_cmd))
+    app.add_handler(CommandHandler("ccvalue", ccvalue_cmd))
+    app.add_handler(CommandHandler("ccdesc", ccdesc_cmd))
+    app.add_handler(CommandHandler("addstock", addstock_cmd))
 
-    # Render Web Service ko port chahiye
-    threading.Thread(
-        target=run_web,
-        daemon=True
-    ).start()
+    app.add_handler(CallbackQueryHandler(callback_router))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
-    app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
-
-    app.add_error_handler(
-        error_handler
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "admin",
-            admin_panel
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "cancel",
-            cancel
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "acc",
-            acc
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "ban",
-            ban
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "icon",
-            icon
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            callback_router
-        )
-    )
-
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            text_router
-        )
-    )
-
-    print(
-        "===================================="
-    )
-
-    print(
-        "        👑 VIP BOT STARTED"
-    )
-
-    print(
-        "        🌐 WEB SERVER STARTED"
-    )
-
-    print(
-        "===================================="
-    )
-
-    app.run_polling()
-
+    print("VIP Bot started.")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
