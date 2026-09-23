@@ -5,6 +5,9 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 import os
+import threading
+import time
+import schedule
 from flask import Flask
 from pyrogram import Client
 
@@ -25,8 +28,8 @@ client = Client(
     session_string=SESSION_STRING
 )
 
-def send_msg_instantly():
-    print("🚀 App start hote hi message bhejne ka task shuru ho gaya hai, Maharaj!")
+def send_msg():
+    print("⏰ Subah 7 baje ka task shuru ho gaya hai, Maharaj!")
     with client:
         try:
             client.join_chat(TARGET_GROUP)
@@ -35,15 +38,20 @@ def send_msg_instantly():
         client.send_message(f"@{TARGET_GROUP}", COMMAND)
         print(f"✅ Success! Command bhej di gayi hai @{TARGET_GROUP} par. 😈🔥")
 
+# Roz subah 7:00 AM IST (01:30 UTC) par set kar diya hai
+schedule.every().day.at("01:30").do(send_msg)
+
+def run_schedule():
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
 @app.route('/')
 def home():
-    return "Telegram Auto Bot is Active, Maharaj! Message bhej diya gaya hai. 😈🔥"
+    return "Telegram Auto Bot is Active 24/7, Maharaj! (Subah 7 Baje Mode) 😈🔥"
 
 if __name__ == "__main__":
-    # App start hote hi turant message bhej do
-    send_msg_instantly()
-    
-    # Render ke liye Flask web server start karo taaki online rahe
+    threading.Thread(target=run_schedule, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
     
